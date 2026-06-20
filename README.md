@@ -2,7 +2,7 @@
 
 # RedPen
 
-**Claude Code says ✅. RedPen tells you whether it's lying.**
+**Claude Code says Done. RedPen tells you whether it's lying.**
 
 Claude Code almost always states what it accomplished — "tests pass", "pushed
 to remote", "created the file", "done". RedPen doesn't take its word for it. It
