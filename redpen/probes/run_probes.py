@@ -13,6 +13,7 @@ import json
 import sys
 from pathlib import Path
 
+from ..contradiction import find_failures
 from ..util import RC_NOT_FOUND, RC_TIMEOUT, run
 from .base import ProbeContext, ProbeResult, fail, ok, unverifiable
 
@@ -123,41 +124,69 @@ def _find_run_in_transcript(ctx: ProbeContext, keywords: list[str]):
 # --- probes -----------------------------------------------------------------
 
 
-def _run_gated(ctx, probe, detect, transcript_keywords):
+def _execute_run(ctx, probe, cmd, display):
+    """The explicit, off-by-default --run last resort (re-runs the command)."""
+    rc, out, err = run(cmd, cwd=ctx.cwd, timeout=_RUN_TIMEOUT)
+    # Could-not-run is absent evidence, never a contradiction. A missing
+    # executable or a timeout is UNVERIFIABLE, not FAIL -- don't cry wolf.
+    if rc == RC_NOT_FOUND:
+        return unverifiable(probe, f"could not run `{display}` (executable not found)", command=display)
+    if rc == RC_TIMEOUT:
+        return unverifiable(probe, f"`{display}` timed out before finishing", command=display, exit_code=RC_TIMEOUT)
+    # pytest exit 5 == "no tests were collected". Nothing ran -> UNVERIFIABLE.
+    if display == "pytest" and rc == 5:
+        return unverifiable(probe, "no tests were collected (pytest exit 5)", command=display, exit_code=5)
+    tail = (err or out).strip().splitlines()[-1:] or [""]
+    if rc == 0:
+        return ok(probe, f"`{display}` exited 0 (re-run)", command=display, exit_code=0, ran=True)
+    return fail(probe, f"`{display}` exited {rc} (re-run)", command=display, exit_code=rc, ran=True, tail=tail[0][:200])
+
+
+def _run_gated(ctx, probe, detect, transcript_keywords, *, kind=None, multi_runner=None):
+    """Transcript-primary verification (default), --run as an explicit last resort.
+
+    Order on the default path: an incontestable contradiction in the agent's own
+    captured output -> FAIL; an ambiguous monorepo (multiple runners) ->
+    UNVERIFIABLE; the command never ran this session -> UNVERIFIABLE (we do NOT
+    re-run); it ran and failed -> FAIL; it ran clean -> OK.
+    """
     detected = detect(Path(ctx.cwd))
     if detected is None:
         return unverifiable(probe, "no command detected for this project")
     cmd, display = detected
 
     if ctx.run:
-        rc, out, err = run(cmd, cwd=ctx.cwd, timeout=_RUN_TIMEOUT)
-        # Could-not-run is absent evidence, never a contradiction. A missing
-        # executable or a timeout is UNVERIFIABLE, not FAIL -- don't cry wolf.
-        if rc == RC_NOT_FOUND:
-            return unverifiable(probe, f"could not run `{display}` (executable not found)", command=display)
-        if rc == RC_TIMEOUT:
-            return unverifiable(probe, f"`{display}` timed out before finishing", command=display, exit_code=RC_TIMEOUT)
-        # pytest exit 5 == "no tests were collected". Nothing ran, so we can't
-        # confirm tests pass -> UNVERIFIABLE, never OK and never FAIL.
-        if display == "pytest" and rc == 5:
-            return unverifiable(probe, "no tests were collected (pytest exit 5)", command=display, exit_code=5)
-        tail = (err or out).strip().splitlines()[-1:] or [""]
-        if rc == 0:
-            return ok(probe, f"`{display}` exited 0", command=display, exit_code=0, ran=True)
-        return fail(
-            probe,
-            f"`{display}` exited {rc}",
-            command=display,
-            exit_code=rc,
-            ran=True,
-            tail=tail[0][:200],
-        )
+        return _execute_run(ctx, probe, cmd, display)
 
+    # 1) incontestable: the agent's own output shows a failure of this kind.
+    if kind and ctx.transcript is not None:
+        fails = find_failures(ctx.transcript.tool_events, kind)
+        if fails:
+            f0 = fails[0]
+            return fail(
+                probe,
+                f"{kind} failed this session: {f0.line[:60]}",
+                command=(f0.command or display)[:200],
+                contradiction=f0.line,
+                source="transcript-output",
+            )
+
+    # 2) monorepo / ambiguity guard -- never a false OK when we can't tell which.
+    if multi_runner is not None:
+        runners = multi_runner(Path(ctx.cwd))
+        if len(runners) > 1:
+            return unverifiable(
+                probe,
+                f"multiple runners present ({', '.join(runners)}); ambiguous which the claim means",
+                runners_detected=runners,
+            )
+
+    # 3) did the command run this session? (we never re-run on the default path)
     ev = _find_run_in_transcript(ctx, transcript_keywords)
     if ev is None:
         return unverifiable(
             probe,
-            f"`{display}` was not run this session -- pass --run to execute it",
+            f"`{display}` was not run this session -- pass --run to re-execute (flaky, side-effecting)",
             command=display,
             ran=False,
         )
@@ -195,17 +224,22 @@ def tests_pass(ctx: ProbeContext, **_: object) -> ProbeResult:
     res = _run_gated(
         ctx, "tests_pass", detect_test_command,
         ["pytest", "npm test", "npm run test", "cargo test", "go test", "make test"],
+        kind="tests", multi_runner=_present_test_runners,
     )
-    # Surface monorepo/multi-runner ambiguity without changing the verdict.
+    # Surface multi-runner ambiguity on the --run path too (the gate only does
+    # it on the transcript path).
     runners = _present_test_runners(Path(ctx.cwd))
-    if len(runners) > 1:
+    if len(runners) > 1 and "runners_detected" not in res.evidence:
         res.evidence["runners_detected"] = runners
-        res.evidence["note"] = f"multiple test runners present ({', '.join(runners)}); used the first"
+        res.evidence["note"] = f"multiple test runners present ({', '.join(runners)})"
     return res
 
 
 def build_ok(ctx: ProbeContext, **_: object) -> ProbeResult:
-    return _run_gated(ctx, "build_ok", detect_build_command, ["npm run build", "make build", "cargo build", "go build"])
+    return _run_gated(
+        ctx, "build_ok", detect_build_command,
+        ["npm run build", "make build", "cargo build", "go build"], kind="build",
+    )
 
 
 def lint_clean(ctx: ProbeContext, **_: object) -> ProbeResult:

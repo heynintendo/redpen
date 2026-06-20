@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from .claims import Claim
 from .probes import PROBES
 from .probes.base import ProbeContext, ProbeResult, ProbeSpec, Verdict
+from .util import start_recording, stop_recording
 
 
 @dataclass
@@ -40,10 +41,16 @@ def run_probe(spec: ProbeSpec, ctx: ProbeContext) -> ProbeResult:
     fn = PROBES.get(spec.name)
     if fn is None:
         return ProbeResult(spec.name, Verdict.UNVERIFIABLE, f"unknown probe: {spec.name}")
+    start_recording()  # capture the exact commands this probe runs (for `explain`)
     try:
-        return fn(ctx, **spec.kwargs)
+        result = fn(ctx, **spec.kwargs)
     except Exception as exc:  # noqa: BLE001 -- deliberately defensive
-        return ProbeResult(spec.name, Verdict.UNVERIFIABLE, f"probe errored: {exc}")
+        result = ProbeResult(spec.name, Verdict.UNVERIFIABLE, f"probe errored: {exc}")
+    finally:
+        commands = stop_recording()
+    if commands and "commands" not in result.evidence:
+        result.evidence["commands"] = commands
+    return result
 
 
 def verify(claims: list[Claim], ctx: ProbeContext, judge=None) -> list[Finding]:

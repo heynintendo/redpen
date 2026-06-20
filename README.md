@@ -32,11 +32,16 @@ pip install git+https://github.com/heynintendo/redpen
 ```bash
 redpen check                 # extract claims from the latest transcript, verify each
 redpen check "is the push done?"   # verify one ad-hoc claim
-redpen check --run           # permit re-running tests/build/lint (default is read-only)
 redpen check --deep          # add the LLM judge + full-request audit (see below)
-redpen check --no-art        # skip the mascot
+redpen check --run           # re-run tests/build/lint (OFF by default; flaky, side-effecting)
+redpen explain <n>           # the full evidence behind verdict #n from the last run
+redpen explain last          # ...or the last verdict
 redpen history               # what was claimed before, and did it hold?
 ```
+
+Every verdict line is numbered; `redpen explain <n>` prints the claim, the probe,
+the **exact commands run**, the raw evidence, and the one-line reason — so any
+contested verdict is fully auditable.
 
 Wire it into Claude Code as slash commands — `/check` runs `redpen check`
 (fast, deterministic) and `/checkall` runs `redpen check --deep` (deep audit).
@@ -67,11 +72,22 @@ a hook on it.
 | Stage | What it does |
 |-------|--------------|
 | **Claim extractor** | Finds the latest Claude Code transcript for this directory, reads the final message, maps each success assertion to probes. |
-| **Probes** | Small, self-contained checks: `git_pushed`, `git_clean`, `file_present`, `tests_pass`, `build_ok`, `lint_clean`, `branch_synced`, `pr_status`, `todos_remaining`, `exit_code_scan`. Each returns a structured evidence dict. |
-| **Renderer** | One line per claim, ANSI-colored, with a summary footer. |
+| **Probes** | Small, self-contained checks: `git_pushed`, `git_clean`, `file_present`, `tests_pass`, `build_ok`, `lint_clean`, `branch_synced`, `pr_status`, `todos_remaining`, `dep_present`, `typecheck_clean`, `test_count`, `symbol_exists`, and `contradiction_scan`. Each returns a structured evidence dict. |
+| **Contradiction engine** | Scans the agent's **own captured tool output** for failure signatures (pytest `N failed`, `AssertionError`, build/compiler errors). When a "tests pass / build succeeds / done" claim is contradicted by a failure the agent itself printed, it `FAIL`s and quotes the line — no re-execution, incontestable. |
+| **Session-scoping** | A "created/added X" claim is checked against the **session changed-set** (transcript edits + git delta vs a task-start baseline), not just whether the file exists. A pre-existing file the agent never touched is `UNVERIFIABLE`, not a false `OK`. |
+| **Custom rules** | `.redpen.yml` maps claim patterns to your own verification commands — the lever for stack-specific claims (deploys, migrations, codegen). See below. |
+| **explain** | Numbers every verdict; `redpen explain <n>` shows the commands, evidence, and reason behind it (persisted to `.redpen/last_run.json`). |
 | **Ledger** | SQLite at `.redpen/ledger.db` records every verdict so a later session can ask what was claimed before. |
-| **Judge** *(--deep)* | Resolves `UNVERIFIABLE` claims from the gathered evidence alone, via one headless `claude -p` turn. Never reads the codebase. |
+| **Judge** *(--deep)* | Resolves `UNVERIFIABLE` claims from the gathered evidence alone, via one headless `claude -p` turn. Never reads the codebase. Verdicts are cached by evidence hash, so identical evidence never re-spends quota. |
 | **Request audit** *(--deep)* | Decomposes your last request and reconciles asked-for vs. claimed vs. evidenced, flagging silent gaps. |
+
+### Tests, builds and linters are verified from the transcript
+
+By default RedPen **never runs your tests, build or linter** — it reads what
+already happened this session from the transcript: `OK` if the command ran and
+passed, `FAIL` if it ran and failed (the contradiction engine quotes the failing
+line), `UNVERIFIABLE` if it never ran. `--run` re-executes as an explicit last
+resort, and is off by default because re-running is flaky and side-effecting.
 
 ## Deep mode — `/checkall`
 
@@ -112,6 +128,38 @@ gracefully: every claim it can't reach simply stays `UNVERIFIABLE`.
 `sonnet` by default — switch the single `LLM_MODEL` line in `redpen/config.py`
 to `haiku` for a faster, cheaper pass.
 
+## Custom rules — `.redpen.yml`
+
+Built-in probes leave stack-specific claims (deploys, migrations, codegen)
+`UNVERIFIABLE`. A `.redpen.yml` in your project root maps a claim pattern to
+your own verification command:
+
+```yaml
+rules:
+  # "ran the migration" -> confirm the DB is at head (read-only, so safe).
+  - name: migration-applied
+    claim_pattern: "(ran|applied).*migration"
+    command: "alembic current"
+    expect_output: "(head)"      # substring (or set expect_output_regex: true)
+    safe: true                   # runs on the normal path
+
+  # "deployed to staging" -> hit the health endpoint (side-effecting -> --run only).
+  - name: staging-healthy
+    claim_pattern: "deployed to staging"
+    command: "curl -fsS https://staging.example.com/healthz"
+    expect_exit: 0
+```
+
+A claim hits the **first** matching rule; the command runs in a subprocess with
+a timeout and its exit/output is compared to the expectation: match → `OK`,
+clear mismatch → `FAIL`, couldn't-run/timeout/ambiguous → `UNVERIFIABLE`.
+
+Because rules run **your** commands, execution is gated: a rule runs on the
+normal `redpen check` only if it declares `safe: true` (use for fast, read-only
+checks); rules without it run only under `redpen check --run`. A full example
+is in [`docs/redpen.example.yml`](docs/redpen.example.yml). `.redpen.json` is
+also accepted if you prefer exact JSON.
+
 ## Auto-verify hook (opt-in, off by default)
 
 Want RedPen to grade every task automatically? Install a Claude Code **Stop
@@ -131,7 +179,11 @@ It is **strictly opt-in** and safe by design:
   disabled, so they can't trigger the hook.
 - **Personal and reversible.** It writes to `.claude/settings.local.json` (your
   git-ignored personal settings, not the shared `settings.json`), and
-  `uninstall-hook` removes only RedPen's entry, leaving everything else intact.
+  `uninstall-hook` removes only RedPen's entries, leaving everything else intact.
+- **Session-scoped.** It also installs a `SessionStart` hook that snapshots a
+  baseline (`.redpen/baseline.json`: git HEAD + status + file hashes) so the
+  changed-set can tell what *this* task touched. Everything degrades gracefully
+  when there's no baseline.
 
 ## Demo
 

@@ -28,12 +28,19 @@ _FILE_WRITE_TOOLS = {
 
 @dataclass
 class ToolEvent:
-    """One tool call and how it turned out."""
+    """One tool call and how it turned out.
+
+    ``command`` is the full Bash command (or file path); ``output`` is a snippet
+    of the captured stdout/stderr -- the raw material the contradiction engine
+    scans for failure signatures.
+    """
 
     tool: str
     label: str
     failed: bool
     exit_code: int | None = None
+    command: str = ""
+    output: str = ""
 
 
 @dataclass
@@ -154,11 +161,51 @@ def _result_tool_use_id(line: dict) -> str | None:
     return line.get("sourceToolUseID")
 
 
+# Cap on captured per-result output; the contradiction engine only needs the
+# failure lines, which are tiny relative to a full build/test log.
+_OUTPUT_CAP = 8000
+
+
+def _result_content(line: dict) -> str:
+    """Concatenate the textual output of a tool result (stdout/stderr)."""
+    parts: list[str] = []
+    msg = line.get("message") or {}
+    content = msg.get("content")
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                c = block.get("content")
+                if isinstance(c, str):
+                    parts.append(c)
+                elif isinstance(c, list):
+                    for sub in c:
+                        if isinstance(sub, dict) and sub.get("type") == "text":
+                            parts.append(sub.get("text", ""))
+    tur = line.get("toolUseResult")
+    if isinstance(tur, dict):
+        for key in ("stdout", "stderr"):
+            v = tur.get(key)
+            if isinstance(v, str) and v:
+                parts.append(v)
+    return "\n".join(p for p in parts if p)[:_OUTPUT_CAP]
+
+
+def _result_exit_code(line: dict) -> int | None:
+    """Best-effort exit code from a tool result (varies by Claude Code version)."""
+    tur = line.get("toolUseResult")
+    if isinstance(tur, dict):
+        for key in ("exitCode", "exit_code", "returncode", "code"):
+            v = tur.get(key)
+            if isinstance(v, int):
+                return v
+    return None
+
+
 def parse_transcript(path: Path | str) -> Transcript:
     """Parse a transcript JSONL into the essentials the probes need."""
     path = Path(path)
     t = Transcript(path=str(path))
-    pending: dict[str, tuple[str, str]] = {}  # tool_use_id -> (tool, label)
+    pending: dict[str, tuple[str, str, str]] = {}  # tool_use_id -> (tool, label, command)
     seen_touched: set[str] = set()
 
     with path.open(encoding="utf-8") as fh:
@@ -195,8 +242,9 @@ def parse_transcript(path: Path | str) -> Transcript:
                         tid = block.get("id", "")
                         inp = block.get("input") or {}
                         label = _tool_label(tool, inp)
+                        command = _tool_command(tool, inp)
                         if tid:
-                            pending[tid] = (tool, label)
+                            pending[tid] = (tool, label, command)
                         key = _FILE_WRITE_TOOLS.get(tool)
                         if key and inp.get(key):
                             fp = str(inp[key])
@@ -225,14 +273,21 @@ def parse_transcript(path: Path | str) -> Transcript:
             failed = _result_failed(line)
             if failed is not None:
                 tid = _result_tool_use_id(line)
-                tool, label = pending.get(tid or "", ("", ""))
+                tool, label, command = pending.get(tid or "", ("", "", ""))
                 if not tool:
                     tur = line.get("toolUseResult")
                     if isinstance(tur, dict):
                         tool = tur.get("commandName", "") or "tool"
                         label = label or tur.get("commandName", "")
                 t.tool_events.append(
-                    ToolEvent(tool=tool or "tool", label=label or tool or "tool", failed=failed)
+                    ToolEvent(
+                        tool=tool or "tool",
+                        label=label or tool or "tool",
+                        failed=failed,
+                        exit_code=_result_exit_code(line),
+                        command=command,
+                        output=_result_content(line),
+                    )
                 )
 
     if t.assistant_texts:
@@ -264,3 +319,23 @@ def _tool_label(tool: str, inp: dict) -> str:
         if inp.get(key):
             return f"{tool}({inp[key]})"
     return tool
+
+
+def _tool_command(tool: str, inp: dict) -> str:
+    """The full command/target of a tool call (untruncated, for evidence)."""
+    if tool == "Bash":
+        return str(inp.get("command", "")).strip()
+    for key in ("file_path", "notebook_path", "path"):
+        if inp.get(key):
+            return str(inp[key])
+    return ""
+
+
+def iter_tool_outputs(transcript: "Transcript | None"):
+    """Yield each tool event that captured output -- the contradiction engine's
+    raw material. Reuses the already-parsed transcript; never re-reads anything.
+    """
+    if transcript is None:
+        return
+    for ev in transcript.tool_events:
+        yield ev

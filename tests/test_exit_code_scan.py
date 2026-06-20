@@ -34,8 +34,8 @@ def test_failed_command_narrated_as_success_is_fail():
     res = exit_code_scan(_ctx(t))
 
     assert res.verdict is Verdict.FAIL
-    assert res.evidence["failures"]  # non-empty list of failed commands
-    assert "pytest" in str(res.evidence["failures"])
+    assert res.evidence["contradictions"]  # non-empty list of quoted failures
+    assert "pytest" in str(res.evidence["contradictions"])
 
 
 def test_failure_without_success_narration_is_unverifiable():

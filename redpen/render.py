@@ -156,15 +156,48 @@ def render_report(
     out.append(_headline(p, counts))
     out.append("")
 
-    width = min(max((len(f.display) for f in findings), default=12), 46)
-    for f in findings:
+    width = min(max((len(f.display) for f in findings), default=12), 44)
+    for i, f in enumerate(findings, start=1):
         sym = _symbol(p, f.result.verdict)
-        subject = _truncate(f.display, 46).ljust(width)
-        evidence = p.dim(_truncate(f.result.detail, 62))
-        out.append(f"  {sym}  {subject}  {evidence}")
+        subject = _truncate(f.display, 44).ljust(width)
+        evidence = p.dim(_truncate(f.result.detail, 60))
+        out.append(f"  {p.dim(f'{i:>2}.')} {sym}  {subject}  {evidence}")
 
     out.append("")
     out.append(_footer(p, counts, elapsed))
+    out.append(p.dim("  redpen explain <n>  for the evidence behind any line"))
+    return "\n".join(out)
+
+
+def render_explain(record: dict, *, color: bool | None = None) -> str:
+    """Full audit trail for one numbered verdict from the last run."""
+    import json as _json
+
+    on = _supports_color(sys.stdout) if color is None else color
+    p = Palette(on)
+    verdict = record.get("verdict", "UNVERIFIABLE")
+    sym = {"OK": p.green("✓"), "FAIL": p.red("✗")}.get(verdict, p.yellow("⚠"))
+
+    out = [p.bold(f"{TOOL_NAME} — verdict #{record.get('n', '?')}: {sym} {verdict}"), ""]
+    out.append(f"  {p.dim('claim:  ')} {record.get('claim', '')}")
+    out.append(f"  {p.dim('subject:')} {record.get('subject', '')}")
+    out.append(f"  {p.dim('probe:  ')} {record.get('probe', '')}")
+    out.append(f"  {p.dim('reason: ')} {record.get('reason', '')}")
+    out.append("")
+
+    commands = record.get("commands") or []
+    if commands:
+        out.append(p.bold("  commands run:"))
+        for c in commands:
+            out.append(f"    {p.dim('$')} {c}")
+    else:
+        out.append(p.dim("  commands run: none (this probe inspects state directly)"))
+    out.append("")
+
+    evidence = {k: v for k, v in (record.get("evidence") or {}).items() if k != "commands"}
+    out.append(p.bold("  evidence:"))
+    for line in _json.dumps(evidence, indent=2, default=str).splitlines():
+        out.append(f"    {p.dim(line)}")
     return "\n".join(out)
 
 
@@ -179,6 +212,7 @@ def render_audit(items: list[dict], *, color: bool | None = None) -> str:
         "DONE": (p.green, "✓"),
         "UNSUBSTANTIATED": (p.yellow, "⚠"),
         "SKIPPED": (p.red, "✗"),
+        "UNVERIFIABLE": (p.yellow, "⚠"),
         "UNKNOWN": (p.yellow, "·"),
     }
     gaps = sum(1 for i in items if i.get("status") != "DONE")

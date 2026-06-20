@@ -16,14 +16,17 @@ _TODO_RE = re.compile(r"\b(TODO|FIXME|XXX)\b")
 _WHITESPACE_SCAN_LIMIT = 64 * 1024
 
 
-def file_present(ctx: ProbeContext, path: str | None = None, **_: object) -> ProbeResult:
-    """Verify a "created/wrote <path>" claim. Precision-first.
+def file_present(ctx: ProbeContext, path: str | None = None, created: bool = False, **_: object) -> ProbeResult:
+    """Verify a "created/wrote <path>" claim. Precision-first, session-scoped.
 
     Only a *missing* path contradicts "created <path>" -> FAIL. Everything
     ambiguous is UNVERIFIABLE, never FAIL: an empty file, a whitespace-only
-    file, an empty directory, or a symlink whose target is missing. A present,
-    non-empty file (or non-empty directory) is OK. Resolves relative paths
-    against the project root; absolute paths are used as-is.
+    file, an empty directory, or a symlink whose target is missing.
+
+    For a *creation* claim (``created=True``) the file must also be in the
+    session changed-set -- if it exists but the agent never touched it this
+    session, the creation claim is UNVERIFIABLE, not OK (the pre-existed-file
+    false-OK). Degrades to a plain existence check when no changed-set is known.
     """
     if not path:
         return unverifiable("file_present", "no path supplied to verify")
@@ -41,6 +44,17 @@ def file_present(ctx: ProbeContext, path: str | None = None, **_: object) -> Pro
 
     if not p.exists():
         return fail("file_present", f"{path} does not exist", exists=False, path=str(p))
+
+    # Session-scoping: a "created/modified" claim needs evidence the agent
+    # actually touched this file this session, not just that it exists on disk.
+    if created and ctx.changed_set is not None:
+        provenance = sorted(ctx.changed_set.provenance(ctx.cwd, path))
+        if not provenance:
+            return unverifiable(
+                "file_present",
+                f"{path} exists but there's no evidence the agent created/modified it this session",
+                exists=True, touched_this_session=False, path=str(p),
+            )
 
     if p.is_dir():
         entries = list(p.iterdir())
@@ -78,11 +92,11 @@ def file_present(ctx: ProbeContext, path: str | None = None, **_: object) -> Pro
                 exists=True, size=size, mtime=mtime,
             )
 
-    return ok(
-        "file_present",
-        f"{path} present ({size} bytes)",
-        exists=True, size=size, mtime=mtime, symlink=is_link,
-    )
+    ev = {"exists": True, "size": size, "mtime": mtime, "symlink": is_link}
+    if created and ctx.changed_set is not None:
+        ev["touched_this_session"] = True
+        ev["provenance"] = sorted(ctx.changed_set.provenance(ctx.cwd, path))
+    return ok("file_present", f"{path} present ({size} bytes)", **ev)
 
 
 def todos_remaining(ctx: ProbeContext, **_: object) -> ProbeResult:

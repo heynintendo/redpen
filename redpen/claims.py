@@ -22,7 +22,7 @@ PROBE_SUBJECT = {
     "git_clean": "everything is committed",
     "tests_pass": "tests pass",
     "todos_remaining": "no unfinished stubs left behind",
-    "exit_code_scan": "no failed step was called done",
+    "contradiction_scan": "no failed step was called done",
     "build_ok": "the build is OK",
     "lint_clean": "the linter is clean",
 }
@@ -44,7 +44,7 @@ def default_suite() -> list[ProbeSpec]:
     default path stays offline and under the speed budget. Those run only when
     a claim explicitly mentions branch-sync or a PR.
     """
-    names = ["git_pushed", "git_clean", "tests_pass", "todos_remaining", "exit_code_scan"]
+    names = ["git_pushed", "git_clean", "tests_pass", "todos_remaining", "contradiction_scan"]
     return [ProbeSpec(n, label=PROBE_SUBJECT.get(n)) for n in names]
 
 
@@ -69,7 +69,9 @@ def _specs_for_sentence(s: str) -> list[ProbeSpec]:
 
     for m in patterns.FILE_RE.finditer(s):
         path = m.group("path")
-        specs.append(ProbeSpec("file_present", {"path": path}, label=f"wrote {path}"))
+        # These come from create/write/add verbs, so they are creation claims:
+        # require the file to be in the session changed-set, not merely to exist.
+        specs.append(ProbeSpec("file_present", {"path": path, "created": True}, label=f"wrote {path}"))
 
     if patterns.PUSH_RE.search(s):
         specs.append(ProbeSpec("git_pushed"))
@@ -85,6 +87,19 @@ def _specs_for_sentence(s: str) -> list[ProbeSpec]:
         specs.append(ProbeSpec("pr_status"))
     if patterns.BRANCH_SYNC_RE.search(s):
         specs.append(ProbeSpec("branch_synced"))
+
+    # probe-pack: dependency / type-check / test-count / symbol claims
+    m = patterns.TEST_COUNT_RE.search(s)
+    if m:
+        specs.append(ProbeSpec("test_count", {"n": int(m.group(1))}, label=f"all {m.group(1)} tests pass"))
+    if patterns.TYPECHECK_RE.search(s):
+        specs.append(ProbeSpec("typecheck_clean"))
+    dep = patterns.extract_dep(s)
+    if dep:
+        specs.append(ProbeSpec("dep_present", {"name": dep}, label=f"added dependency {dep}"))
+    sym = patterns.extract_symbol(s)
+    if sym:
+        specs.append(ProbeSpec("symbol_exists", {"symbol": sym}, label=f"added {sym}"))
 
     # A generic "done/ready" claim pulls in the whole default suite.
     if patterns.DONE_RE.search(s):
@@ -109,6 +124,21 @@ def _dedupe(specs: list[ProbeSpec]) -> list[ProbeSpec]:
     return out
 
 
+def _dedupe_across_claims(claims: list[Claim]) -> list[Claim]:
+    """Drop a probe if an identical (name, kwargs) already ran for an earlier
+    claim, so two "done"-ish sentences don't each expand the whole default suite.
+    """
+    seen: set = set()
+    out: list[Claim] = []
+    for claim in claims:
+        kept = [s for s in claim.probe_specs if s.key() not in seen]
+        seen.update(s.key() for s in kept)
+        if kept:
+            claim.probe_specs = kept
+            out.append(claim)
+    return out
+
+
 def extract_claims(text: str, source: str = "transcript") -> list[Claim]:
     """Map a block of text to a list of (claim, probes)."""
     claims: list[Claim] = []
@@ -118,7 +148,7 @@ def extract_claims(text: str, source: str = "transcript") -> list[Claim]:
             claims.append(Claim(text=sentence, probe_specs=specs, source=source))
 
     if claims:
-        return claims
+        return _dedupe_across_claims(claims)
 
     # Nothing specific matched. Text that clearly narrates completion runs the
     # full default suite; an ad-hoc question we can't map becomes an honest

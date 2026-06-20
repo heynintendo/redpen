@@ -133,7 +133,8 @@ def test_audit_request_parses_and_normalizes_status(monkeypatch):
         claimed=["created README.md", "pushed", "tests pass"],
         verdicts=[("wrote README.md", "OK", "present")],
     )
-    assert [o["status"] for o in out] == ["DONE", "SKIPPED", "UNKNOWN"]
+    # An unrecognized status normalizes to UNVERIFIABLE (never a guessed SKIPPED).
+    assert [o["status"] for o in out] == ["DONE", "SKIPPED", "UNVERIFIABLE"]
 
 
 def test_audit_request_passes_request_and_evidence_in_one_call(monkeypatch):
@@ -226,3 +227,35 @@ def test_run_claude_unsets_api_key_and_disables_hooks(monkeypatch):
     import tempfile
 
     assert captured["cwd"] == tempfile.gettempdir()
+
+
+# --- determinism cache ------------------------------------------------------
+
+
+def test_judge_caches_verdict_by_evidence(monkeypatch, tmp_path):
+    calls = {"n": 0}
+
+    def fake(prompt, model, timeout):
+        calls["n"] += 1
+        return (0, _envelope('{"verdict":"OK","reason":"level"}'), "")
+
+    monkeypatch.setattr(judge, "_run_claude", fake)
+    base = _unverifiable(ahead=0, upstream="origin/main")
+
+    r1 = judge.judge_claim("pushed", base, cache_dir=tmp_path)
+    r2 = judge.judge_claim("pushed", base, cache_dir=tmp_path)
+
+    assert r1.verdict is Verdict.OK and r2.verdict is Verdict.OK
+    assert calls["n"] == 1  # second call served from the cache, no re-spend
+    assert r2.evidence["judge"].get("cached") is True
+    assert (tmp_path / "judge_cache.json").exists()
+
+
+def test_judge_does_not_cache_fallbacks(monkeypatch, tmp_path):
+    monkeypatch.setattr(judge, "_run_claude", lambda p, m, t: (127, "", "no claude"))
+    r = judge.judge_claim("pushed", _unverifiable(), cache_dir=tmp_path)
+    assert r.verdict is Verdict.UNVERIFIABLE
+    # Nothing cached, so a later (working) call would still try.
+    import json as _json
+    cache = _json.loads((tmp_path / "judge_cache.json").read_text()) if (tmp_path / "judge_cache.json").exists() else {}
+    assert cache == {}

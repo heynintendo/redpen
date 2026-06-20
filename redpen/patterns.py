@@ -81,6 +81,51 @@ CLAIM_LIKE_RE = re.compile(
 )
 
 
+# "all N tests pass" -> verify the exact count from the transcript.
+TEST_COUNT_RE = re.compile(
+    r"\b(?:all\s+)?(\d+)\s+(?:unit\s+|integration\s+)?tests?\s+"
+    r"(?:pass|passing|passed|are\s+passing|green)\b",
+    re.IGNORECASE,
+)
+
+# A configured type checker is clean.
+TYPECHECK_RE = re.compile(
+    r"\b(?:mypy|pyright|tsc)\b[^.]*\b(?:pass\w*|clean|green|no (?:type )?errors|0 errors)\b"
+    r"|\bno type errors\b|\btype[- ]?check\w*\b[^.]*\b(?:pass\w*|clean|green)\b",
+    re.IGNORECASE,
+)
+
+_DEP_KEYWORD = re.compile(
+    r"\b(?:added|installed|bumped|upgraded|pinned)\s+(?:the\s+|a\s+|new\s+)?"
+    r"(?:dependency|dep|package|library|crate|module)\s+[`'\"]?([\w.@/-]+)[`'\"]?",
+    re.IGNORECASE,
+)
+_DEP_TO_MANIFEST = re.compile(
+    r"\b(?:added|installed|pinned)\s+[`'\"]?([\w.@/-]+)[`'\"]?\s+to\s+"
+    r"(?:package\.json|requirements(?:\.txt)?|Cargo\.toml|pyproject(?:\.toml)?|the dependencies|deps)",
+    re.IGNORECASE,
+)
+_SYMBOL_KEYWORD = re.compile(
+    r"\b(?:added|created|implemented|wrote|defined|introduced)\s+(?:a\s+|an\s+|the\s+|new\s+)?"
+    r"(?:function|method|class|endpoint|route|component|handler|hook|fn|func|api)\s+"
+    r"[`'\"]?([A-Za-z_/][\w/.\-]*)[`'\"]?",
+    re.IGNORECASE,
+)
+
+
+def extract_dep(sentence: str) -> str | None:
+    for pat in (_DEP_KEYWORD, _DEP_TO_MANIFEST):
+        m = pat.search(sentence)
+        if m:
+            return m.group(1)
+    return None
+
+
+def extract_symbol(sentence: str) -> str | None:
+    m = _SYMBOL_KEYWORD.search(sentence)
+    return m.group(1) if m else None
+
+
 # Generic "done / complete / ready / finished" -> run the default suite.
 DONE_RE = re.compile(
     r"\b(done|complete[ds]?|finished|ready|all set|good to go|"

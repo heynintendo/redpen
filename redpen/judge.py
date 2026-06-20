@@ -29,6 +29,7 @@ import os
 import re
 import subprocess
 import tempfile
+from pathlib import Path
 from typing import Callable
 
 from . import config
@@ -131,20 +132,69 @@ def _fallback(result: ProbeResult, note: str) -> ProbeResult:
     return ProbeResult(result.probe, Verdict.UNVERIFIABLE, f"{result.detail} (judge: {note})", evidence)
 
 
+# --- determinism cache ------------------------------------------------------
+# Identical evidence always yields the identical verdict, persisted in
+# .redpen/judge_cache.json, so a re-run never re-spends quota or flip-flops.
+_CACHE_FILE = "judge_cache.json"
+# Evidence keys that vary between runs but don't change the judgement.
+_VOLATILE = {"mtime", "commands", "judge"}
+
+
+def _evidence_key(claim: str, result: ProbeResult) -> str:
+    import hashlib
+
+    stable = {k: v for k, v in (result.evidence or {}).items() if k not in _VOLATILE}
+    blob = json.dumps(
+        {"claim": claim, "probe": result.probe, "detail": result.detail, "evidence": stable},
+        sort_keys=True, default=str,
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _load_cache(cache_dir) -> dict:
+    if not cache_dir:
+        return {}
+    path = Path(cache_dir) / _CACHE_FILE
+    try:
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_cache(cache_dir, cache: dict) -> None:
+    if not cache_dir:
+        return
+    path = Path(cache_dir) / _CACHE_FILE
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(cache, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
 def judge_claim(
     claim: str,
     result: ProbeResult,
     model: str | None = None,
     timeout: float | None = None,
+    cache_dir=None,
 ) -> ProbeResult:
     """Ask the LLM to resolve an UNVERIFIABLE result. Never raises.
 
     Returns a refined ProbeResult, or an UNVERIFIABLE fallback on any failure /
     timeout / parse error. Only ever called on UNVERIFIABLE results (the engine
-    gates it), so deterministic OK/FAIL verdicts are never overridden.
+    gates it), so deterministic OK/FAIL verdicts are never overridden. Verdicts
+    are cached by evidence hash, so identical evidence never re-spends quota.
     """
     model = model or config.LLM_MODEL
     timeout = timeout if timeout is not None else config.JUDGE_TIMEOUT_SECONDS
+
+    key = _evidence_key(claim, result)
+    cache = _load_cache(cache_dir)
+    cached = cache.get(key)
+    if cached and cached.get("verdict") in _VALID:
+        evidence = {**result.evidence, "judge": {**cached, "cached": True}}
+        return ProbeResult(result.probe, _VALID[cached["verdict"]], f"judge: {cached.get('reason', '')} (cached)", evidence)
 
     rc, stdout, stderr = _run_claude(_verdict_prompt(claim, result), model, timeout)
     if rc != 0:
@@ -168,13 +218,19 @@ def judge_claim(
         return _fallback(result, f"unknown verdict '{vkey[:20]}'")
 
     reason = str(parsed.get("reason", "")).strip()[:80] or "no reason given"
-    evidence = {**result.evidence, "judge": {"model": model, "verdict": vkey, "reason": reason}}
+    # Cache only real verdicts -- never the transient fallbacks above, so a
+    # temporary claude outage doesn't get frozen into the cache.
+    cache[key] = {"model": model, "verdict": vkey, "reason": reason}
+    _save_cache(cache_dir, cache)
+    evidence = {**result.evidence, "judge": cache[key]}
     return ProbeResult(result.probe, verdict, f"judge: {reason}", evidence)
 
 
-def make_judge(model: str | None = None, timeout: float | None = None) -> Judge:
+def make_judge(model: str | None = None, timeout: float | None = None, cache_dir=None) -> Judge:
     """Build the judge callable the engine seam expects: judge(claim, result)."""
-    return lambda claim, result: judge_claim(claim, result, model=model, timeout=timeout)
+    return lambda claim, result: judge_claim(
+        claim, result, model=model, timeout=timeout, cache_dir=cache_dir
+    )
 
 
 # --- full-request audit (the /checkall extras) ------------------------------
@@ -276,12 +332,16 @@ def audit_request(
         f"ASSISTANT CLAIMED:\n{claimed_block}\n\n"
         f"REDPEN VERDICTS (subject -> verdict: detail):\n{verdict_block}\n\n"
         "First break the request into the concrete, separately-checkable things "
-        "asked for (max 8). Then classify each:\n"
+        "EXPLICITLY asked for (max 8). Do NOT invent items the user did not ask "
+        "for. Then classify each:\n"
         '- "DONE": addressed by a claim AND RedPen evidence supports it.\n'
         '- "UNSUBSTANTIATED": claimed but evidence is FAIL/UNVERIFIABLE or absent.\n'
-        '- "SKIPPED": not addressed by any claim.\n'
+        '- "SKIPPED": ONLY when it was clearly requested, no claim addressed it, '
+        "AND no evidence suggests it happened.\n"
+        '- "UNVERIFIABLE": use this whenever you are unsure -- e.g. it might have '
+        "been done but isn't claimed/evidenced. Prefer this over a guessed SKIPPED.\n"
         "Output ONLY a JSON array: "
-        '[{"item":"<asked-for item>","status":"DONE|UNSUBSTANTIATED|SKIPPED","note":"<=12 words"}]'
+        '[{"item":"<asked-for item>","status":"DONE|UNSUBSTANTIATED|SKIPPED|UNVERIFIABLE","note":"<=12 words"}]'
     )
     rc, stdout, _ = _run_claude(prompt, model, timeout)
     if rc != 0:
@@ -293,16 +353,17 @@ def audit_request(
     if not arr:
         return []
 
-    valid_status = {"DONE", "UNSUBSTANTIATED", "SKIPPED"}
+    valid_status = {"DONE", "UNSUBSTANTIATED", "SKIPPED", "UNVERIFIABLE"}
     out: list[dict] = []
     for entry in arr:
         if not isinstance(entry, dict):
             continue
         status = str(entry.get("status", "")).strip().upper()
+        # Anything we don't recognize collapses to UNVERIFIABLE, never a guessed SKIPPED.
         out.append(
             {
                 "item": str(entry.get("item", "")).strip()[:80],
-                "status": status if status in valid_status else "UNKNOWN",
+                "status": status if status in valid_status else "UNVERIFIABLE",
                 "note": str(entry.get("note", "")).strip()[:80],
             }
         )

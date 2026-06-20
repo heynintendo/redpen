@@ -18,12 +18,18 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-# The command Claude Code runs on Stop. `|| true` keeps it non-blocking (a FAIL
-# verdict is printed but never blocks the stop or feeds back to the model).
-HOOK_COMMAND = "REDPEN_HOOK=1 redpen check --no-art || true"
+# Commands Claude Code runs. `|| true` keeps them non-blocking. The Stop hook
+# verifies the finished task, then refreshes the baseline for the next one. The
+# SessionStart hook snapshots the baseline at task start (when supported) so the
+# session changed-set can bound the delta. Both degrade gracefully.
+HOOK_COMMAND = "REDPEN_HOOK=1 redpen check --no-art; redpen baseline >/dev/null 2>&1 || true"
+BASELINE_COMMAND = "redpen baseline >/dev/null 2>&1 || true"
 
-# Substring that identifies a hook entry as ours (for idempotent un/install).
-_MARKER = "redpen check"
+# The events we install on, and the command for each.
+_EVENTS = {"Stop": HOOK_COMMAND, "SessionStart": BASELINE_COMMAND}
+
+# Substrings that identify a hook entry as ours (for idempotent un/install).
+_MARKERS = ("redpen check", "redpen baseline")
 
 
 def settings_path(project_root: Path | str) -> Path:
@@ -46,52 +52,56 @@ def _write(path: Path, data: dict) -> None:
 
 
 def _is_ours(hook: dict) -> bool:
-    return isinstance(hook, dict) and _MARKER in str(hook.get("command", ""))
+    return isinstance(hook, dict) and any(m in str(hook.get("command", "")) for m in _MARKERS)
 
 
 def install_hook(project_root: Path | str) -> tuple[bool, str]:
-    """Install the Stop hook. Returns (changed, path-or-reason)."""
+    """Install the Stop + SessionStart hooks. Returns (changed, path-or-reason)."""
     path = settings_path(project_root)
     data = _load(path)
-    stop = data.setdefault("hooks", {}).setdefault("Stop", [])
+    hooks = data.setdefault("hooks", {})
 
-    for group in stop:
-        if any(_is_ours(h) for h in group.get("hooks", [])):
-            return (False, "already installed")
+    changed = False
+    for event, command in _EVENTS.items():
+        groups = hooks.setdefault(event, [])
+        if any(_is_ours(h) for g in groups for h in g.get("hooks", [])):
+            continue  # already installed for this event
+        groups.append({"hooks": [{"type": "command", "command": command}]})
+        changed = True
 
-    stop.append({"hooks": [{"type": "command", "command": HOOK_COMMAND}]})
+    if not changed:
+        return (False, "already installed")
     _write(path, data)
     return (True, str(path))
 
 
 def uninstall_hook(project_root: Path | str) -> tuple[bool, str]:
-    """Remove only RedPen's Stop hook, leaving everything else intact."""
+    """Remove only RedPen's hooks, leaving everything else intact."""
     path = settings_path(project_root)
     if not path.exists():
         return (False, "no settings file")
 
     data = _load(path)
-    stop = data.get("hooks", {}).get("Stop", [])
-    new_stop = []
+    hooks = data.get("hooks", {})
     removed = False
-    for group in stop:
-        kept = [h for h in group.get("hooks", []) if not _is_ours(h)]
-        if len(kept) != len(group.get("hooks", [])):
-            removed = True
-        if kept:
-            g = dict(group)
-            g["hooks"] = kept
-            new_stop.append(g)
+    for event in list(hooks.keys()):
+        new_groups = []
+        for group in hooks.get(event, []):
+            kept = [h for h in group.get("hooks", []) if not _is_ours(h)]
+            if len(kept) != len(group.get("hooks", [])):
+                removed = True
+            if kept:
+                g = dict(group)
+                g["hooks"] = kept
+                new_groups.append(g)
+        if new_groups:
+            hooks[event] = new_groups
+        else:
+            hooks.pop(event, None)
 
     if not removed:
         return (False, "not installed")
-
-    # Prune now-empty containers so we leave the file as we found it.
-    if new_stop:
-        data["hooks"]["Stop"] = new_stop
-    else:
-        data["hooks"].pop("Stop", None)
-        if not data["hooks"]:
-            data.pop("hooks", None)
+    if not hooks:
+        data.pop("hooks", None)
     _write(path, data)
     return (True, str(path))

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # avoid an import cycle; transcript imports nothing from here
+    from redpen.changeset import ChangedSet
     from redpen.transcript import Transcript
 
 
@@ -59,6 +60,10 @@ class ProbeContext:
     cwd: Path
     run: bool = False
     transcript: "Transcript | None" = None
+    # Session changed-set (what the agent actually touched) and the task-start
+    # baseline. Built once in the CLI and shared; None when unavailable.
+    changed_set: "ChangedSet | None" = None
+    baseline: dict | None = None
 
     def resolve(self, path: str) -> Path:
         """Resolve a possibly-relative path against the project root."""
