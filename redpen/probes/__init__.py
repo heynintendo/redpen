@@ -11,6 +11,7 @@ from .base import ProbeContext, ProbeResult, ProbeSpec, Verdict
 from .file_probes import file_present, todos_remaining
 from .gh_probes import pr_status
 from .git_probes import branch_synced, git_clean, git_pushed
+from .meta_probes import unmapped
 from .run_probes import build_ok, lint_clean, tests_pass
 from .transcript_probes import exit_code_scan
 
@@ -25,6 +26,7 @@ PROBES: dict = {
     "build_ok": build_ok,
     "lint_clean": lint_clean,
     "pr_status": pr_status,
+    "unmapped": unmapped,
 }
 
 __all__ = [
@@ -43,4 +45,5 @@ __all__ = [
     "build_ok",
     "lint_clean",
     "pr_status",
+    "unmapped",
 ]

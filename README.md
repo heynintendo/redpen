@@ -112,6 +112,35 @@ gracefully: every claim it can't reach simply stays `UNVERIFIABLE`.
 `sonnet` by default — switch the single `LLM_MODEL` line in `redpen/config.py`
 to `haiku` for a faster, cheaper pass.
 
+## Auto-verify hook (opt-in, off by default)
+
+Want RedPen to grade every task automatically? Install a Claude Code **Stop
+hook** that runs `redpen check` when a task finishes:
+
+```bash
+redpen install-hook     # opt in
+redpen uninstall-hook   # opt out — removes exactly what it added
+```
+
+It is **strictly opt-in** and safe by design:
+
+- **Deterministic only.** The hook runs plain `redpen check` — **never
+  `--deep`** — so it makes no LLM calls: no surprise quota use, no latency. (If
+  the hook env is set, `--deep` is refused outright as a second guard.)
+- **No recursion.** RedPen's own judge calls spawn `claude -p` with hooks
+  disabled, so they can't trigger the hook.
+- **Personal and reversible.** It writes to `.claude/settings.local.json` (your
+  git-ignored personal settings, not the shared `settings.json`), and
+  `uninstall-hook` removes only RedPen's entry, leaving everything else intact.
+
+## Demo
+
+![RedPen demo](docs/demo.gif)
+
+A mixed check (some claims true, some false) then a `--deep` full-request audit.
+The recording is scripted and reproducible: `bash docs/gen_demo.sh` (needs
+[`vhs`](https://github.com/charmbracelet/vhs) + `ffmpeg`; see `docs/demo.tape`).
+
 ## License
 
 MIT.

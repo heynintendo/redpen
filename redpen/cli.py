@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -48,13 +49,26 @@ def cmd_check(args: argparse.Namespace) -> int:
     color = _color_choice(args.no_color)
 
     # Always load the transcript: several probes (tests_pass, exit_code_scan,
-    # todos_remaining) judge against it even for an ad-hoc question.
-    transcript = load_transcript_for(cwd)
+    # todos_remaining) judge against it even for an ad-hoc question. A
+    # --transcript override bypasses auto-discovery (handy for CI and fixtures).
+    if args.transcript:
+        tpath = Path(args.transcript)
+        if not tpath.is_file():
+            print(f"{TOOL_NAME}: transcript not found: {tpath}", file=sys.stderr)
+            return 2
+        from .transcript import parse_transcript
+
+        transcript = parse_transcript(tpath)
+    else:
+        transcript = load_transcript_for(cwd)
 
     # --deep engages the LLM judge on UNVERIFIABLE claims (deterministic probes
     # still run first). The judge sees only gathered evidence, never the codebase.
     judge = None
-    if args.deep:
+    if args.deep and os.environ.get("REDPEN_HOOK"):
+        # Recursion guard: the auto-verify Stop hook must never spawn `claude -p`.
+        print(f"{TOOL_NAME}: --deep is disabled inside the auto-verify hook; running deterministic only.\n")
+    elif args.deep:
         if config.ENABLE_LLM:
             from .judge import make_judge
 
@@ -62,6 +76,11 @@ def cmd_check(args: argparse.Namespace) -> int:
             print(f"{TOOL_NAME}: --deep — LLM judge ({config.LLM_MODEL}) weighs in on unverifiable claims.\n")
         else:
             print(f"{TOOL_NAME}: --deep requested but ENABLE_LLM is off; running deterministic only.\n")
+
+    # Surface which transcript fed the run when it matters (deep audit / override).
+    if transcript is not None and transcript.path and (args.deep or args.transcript):
+        p_src = Palette(_supports_color(sys.stdout) if color is None else color)
+        print(p_src.dim(f"transcript: {transcript.path}"))
 
     if args.question:
         claims = extract_claims(args.question, source="adhoc")
@@ -96,15 +115,17 @@ def cmd_check(args: argparse.Namespace) -> int:
     # Full-request audit (deep only): reconcile what was asked -> what Claude
     # claimed -> what the evidence + judge actually show. Two extra LLM calls.
     audit: list[dict] = []
-    if judge is not None and transcript is not None:
-        from .claims import decompose_user_request
+    if judge is not None and transcript is not None and transcript.final_user_text:
+        from .claims import assistant_statements
         from .judge import audit_request
 
-        asked = decompose_user_request(transcript)
-        if asked:
-            claimed = list(dict.fromkeys(c.text for c in claims))
-            verdicts = [(f.display, f.result.verdict.value, f.result.detail) for f in findings]
-            audit = audit_request(asked, claimed, verdicts)
+        # "claimed" = what the assistant actually said it did (all its
+        # statements), so the audit can spot a claim with no backing probe,
+        # falling back to the probe-matched claim texts if the message is bare.
+        claimed = assistant_statements(transcript) or list(dict.fromkeys(c.text for c in claims))
+        verdicts = [(f.display, f.result.verdict.value, f.result.detail) for f in findings]
+        # One call: decompose the request AND reconcile it against the evidence.
+        audit = audit_request(transcript.final_user_text, claimed, verdicts)
 
     if args.json:
         print(_as_json(findings, elapsed, audit))
@@ -148,6 +169,32 @@ def cmd_history(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_install_hook(args: argparse.Namespace) -> int:
+    from .hook import install_hook
+
+    root = find_project_root(Path.cwd())
+    changed, info = install_hook(root)
+    if changed:
+        print(f"{TOOL_NAME}: auto-verify Stop hook installed in {info}")
+        print(f"{TOOL_NAME}: it runs `redpen check` (deterministic only) after each task.")
+        print(f"{TOOL_NAME}: remove it anytime with `redpen uninstall-hook`.")
+    else:
+        print(f"{TOOL_NAME}: nothing to do ({info}).")
+    return 0
+
+
+def cmd_uninstall_hook(args: argparse.Namespace) -> int:
+    from .hook import uninstall_hook
+
+    root = find_project_root(Path.cwd())
+    changed, info = uninstall_hook(root)
+    if changed:
+        print(f"{TOOL_NAME}: auto-verify Stop hook removed from {info}")
+    else:
+        print(f"{TOOL_NAME}: nothing to remove ({info}).")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="redpen",
@@ -158,6 +205,7 @@ def build_parser() -> argparse.ArgumentParser:
     check = sub.add_parser("check", help="verify completion claims")
     check.add_argument("question", nargs="?", default=None, help="an ad-hoc claim to verify, e.g. \"is the push done?\"")
     check.add_argument("--run", action="store_true", help="permit re-running tests/build/lint (default: read-only)")
+    check.add_argument("--transcript", metavar="PATH", default=None, help="read this transcript instead of auto-discovering one")
     check.add_argument("--no-art", action="store_true", help="suppress the mascot")
     check.add_argument("--deep", action="store_true", help="(Phase 2) LLM judgement layer")
     check.add_argument("--json", action="store_true", help="emit machine-readable JSON")
@@ -166,6 +214,9 @@ def build_parser() -> argparse.ArgumentParser:
     hist = sub.add_parser("history", help="show past verdicts from the ledger")
     hist.add_argument("--limit", type=int, default=20, help="how many rows to show")
     hist.add_argument("--no-color", action="store_true", help="disable ANSI color")
+
+    sub.add_parser("install-hook", help="install the opt-in auto-verify Stop hook (deterministic only)")
+    sub.add_parser("uninstall-hook", help="remove the auto-verify Stop hook")
 
     return parser
 
@@ -177,6 +228,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_check(args)
     if args.command == "history":
         return cmd_history(args)
+    if args.command == "install-hook":
+        return cmd_install_hook(args)
+    if args.command == "uninstall-hook":
+        return cmd_uninstall_hook(args)
     parser.print_help()
     return 0
 

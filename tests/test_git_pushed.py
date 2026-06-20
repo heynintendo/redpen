@@ -89,3 +89,48 @@ def test_no_upstream_is_unverifiable(tmp_path):
 def test_not_a_git_repo_is_unverifiable(tmp_path):
     res = git_pushed(ProbeContext(cwd=tmp_path))
     assert res.verdict is Verdict.UNVERIFIABLE
+
+
+def test_zero_commits_is_unverifiable(tmp_path):
+    work = tmp_path / "unborn"
+    work.mkdir()
+    _git("init", "-b", "main", cwd=work)
+
+    res = git_pushed(ProbeContext(cwd=work))
+
+    assert res.verdict is Verdict.UNVERIFIABLE
+    assert "commit" in res.detail.lower()
+
+
+def test_no_remote_is_unverifiable(tmp_path):
+    work = tmp_path / "noremote"
+    work.mkdir()
+    _git("init", "-b", "main", cwd=work)
+    _commit(work)
+
+    res = git_pushed(ProbeContext(cwd=work))
+
+    assert res.verdict is Verdict.UNVERIFIABLE
+    assert "remote" in res.detail.lower()
+
+
+def test_detached_head_is_unverifiable(tmp_path):
+    work = _repo_with_upstream(tmp_path)
+    _commit(work, name="g.txt")
+    _git("checkout", "--detach", "HEAD~1", cwd=work)
+
+    res = git_pushed(ProbeContext(cwd=work))
+
+    assert res.verdict is Verdict.UNVERIFIABLE
+    assert "detached" in res.detail.lower()
+
+
+def test_rebase_in_progress_is_unverifiable(tmp_path):
+    work = _repo_with_upstream(tmp_path)
+    # Simulate an in-flight rebase via its marker directory (what git itself uses).
+    (work / ".git" / "rebase-merge").mkdir()
+
+    res = git_pushed(ProbeContext(cwd=work))
+
+    assert res.verdict is Verdict.UNVERIFIABLE
+    assert "rebase" in res.detail.lower()

@@ -129,16 +129,30 @@ def test_audit_request_parses_and_normalizes_status(monkeypatch):
     )
     monkeypatch.setattr(judge, "_run_claude", lambda p, m, t: (0, _envelope(reply), ""))
     out = judge.audit_request(
-        ["create README.md", "push to origin", "tests pass"],
+        "create README.md, push to origin, and make the tests pass",
         claimed=["created README.md", "pushed", "tests pass"],
         verdicts=[("wrote README.md", "OK", "present")],
     )
     assert [o["status"] for o in out] == ["DONE", "SKIPPED", "UNKNOWN"]
 
 
-def test_audit_request_empty_without_asked(monkeypatch):
+def test_audit_request_passes_request_and_evidence_in_one_call(monkeypatch):
+    seen = {}
+
+    def fake(prompt, model, timeout):
+        seen["prompt"] = prompt
+        return (0, _envelope("[]"), "")
+
+    monkeypatch.setattr(judge, "_run_claude", fake)
+    judge.audit_request("add a --version flag", claimed=["did X"], verdicts=[("x", "OK", "y")])
+    # The single call must contain the raw request (to decompose) AND the evidence.
+    assert "add a --version flag" in seen["prompt"]
+    assert "REDPEN VERDICTS" in seen["prompt"]
+
+
+def test_audit_request_empty_without_request(monkeypatch):
     monkeypatch.setattr(judge, "_run_claude", lambda p, m, t: (0, _envelope("[]"), ""))
-    assert judge.audit_request([], claimed=[], verdicts=[]) == []
+    assert judge.audit_request("", claimed=[], verdicts=[]) == []
 
 
 # --- engine precision gate: judge only touches UNVERIFIABLE -----------------
@@ -182,9 +196,10 @@ def test_engine_only_judges_unverifiable_results(monkeypatch):
 def test_run_claude_unsets_api_key_and_disables_hooks(monkeypatch):
     captured = {}
 
-    def fake_run(cmd, capture_output, text, timeout, env):
+    def fake_run(cmd, capture_output, text, timeout, env, cwd):
         captured["cmd"] = cmd
         captured["env"] = env
+        captured["cwd"] = cwd
         # Read the temp settings file while it still exists.
         idx = cmd.index("--settings")
         captured["settings"] = json.loads(open(cmd[idx + 1]).read())
@@ -206,3 +221,8 @@ def test_run_claude_unsets_api_key_and_disables_hooks(monkeypatch):
     assert captured["settings"] == {"disableAllHooks": True}     # no recursive RedPen
     assert captured["cmd"][:2] == ["claude", "-p"]
     assert "--output-format" in captured["cmd"] and "json" in captured["cmd"]
+    # Runs from a neutral dir, NOT a project dir -> its transcript can't pollute
+    # the project's transcript dir (and so can't be auto-discovered later).
+    import tempfile
+
+    assert captured["cwd"] == tempfile.gettempdir()

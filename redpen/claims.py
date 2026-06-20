@@ -91,6 +91,11 @@ def _specs_for_sentence(s: str) -> list[ProbeSpec]:
         for spec in default_suite():
             specs.append(spec)
 
+    # Catch-all: an accomplishment claim with nothing a probe can check still
+    # gets surfaced as a labelled UNVERIFIABLE line, never silently dropped.
+    if not specs and len(s) <= 200 and patterns.CLAIM_LIKE_RE.search(s):
+        specs.append(ProbeSpec("unmapped", label=s[:80]))
+
     return _dedupe(specs)
 
 
@@ -115,11 +120,14 @@ def extract_claims(text: str, source: str = "transcript") -> list[Claim]:
     if claims:
         return claims
 
-    # Nothing specific matched. For an ad-hoc question, or text that clearly
-    # narrates success, fall back to the full default suite as one claim.
-    if source == "adhoc" or patterns.narrates_success(text):
-        label = text.strip() or "completion"
-        return [Claim(text=label[:120], probe_specs=default_suite(), source=source)]
+    # Nothing specific matched. Text that clearly narrates completion runs the
+    # full default suite; an ad-hoc question we can't map becomes an honest
+    # UNVERIFIABLE line rather than a guess or a silent drop.
+    label = (text.strip() or "completion")[:120]
+    if patterns.DONE_RE.search(text) or patterns.narrates_success(text):
+        return [Claim(text=label, probe_specs=default_suite(), source=source)]
+    if source == "adhoc":
+        return [Claim(text=label, probe_specs=[ProbeSpec("unmapped", label=label[:80])], source=source)]
     return []
 
 
@@ -141,6 +149,17 @@ def load_transcript_for(cwd: Path | str, home: Path | None = None) -> Transcript
 def last_user_request(transcript: Transcript) -> str:
     """The most recent genuine human prompt in the transcript (or '')."""
     return transcript.final_user_text if transcript else ""
+
+
+def assistant_statements(transcript: Transcript) -> list[str]:
+    """The assistant's stated accomplishments, as individual sentences.
+
+    Used by the audit so it sees everything Claude *said* it did -- not just the
+    sentences that happened to match a probe.
+    """
+    if not transcript or not transcript.final_assistant_text:
+        return []
+    return _split_sentences(transcript.final_assistant_text)
 
 
 def decompose_user_request(transcript: Transcript, model: str | None = None) -> list[str]:

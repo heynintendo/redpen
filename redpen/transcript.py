@@ -43,6 +43,7 @@ class Transcript:
     session_id: str = ""
     path: str | None = None
     cwd: str | None = None
+    entrypoint: str = ""
     tool_events: list[ToolEvent] = field(default_factory=list)
     touched_files: list[str] = field(default_factory=list)
     assistant_texts: list[str] = field(default_factory=list)
@@ -69,14 +70,51 @@ def transcript_base(home: Path | None = None) -> Path:
     return (home or Path.home()) / ".claude" / "projects"
 
 
+# Entrypoints that mean "RedPen's own headless `claude -p` call", not a real
+# interactive session. Auto-discovery must never surface these -- otherwise
+# RedPen would audit its own judge/decompose calls (a recursion footgun).
+_HEADLESS_ENTRYPOINTS = {"sdk-cli"}
+
+
+def _peek_entrypoint(path: Path, max_lines: int = 60) -> str | None:
+    """Cheaply read a transcript's entrypoint without a full parse."""
+    try:
+        with path.open(encoding="utf-8") as fh:
+            for _ in range(max_lines):
+                raw = fh.readline()
+                if not raw:
+                    break
+                try:
+                    ep = json.loads(raw).get("entrypoint")
+                except json.JSONDecodeError:
+                    continue
+                if ep:
+                    return ep
+    except OSError:
+        return None
+    return None
+
+
+def is_headless_transcript(path: Path) -> bool:
+    """True if this file is one of RedPen's own headless `claude -p` calls."""
+    return _peek_entrypoint(path) in _HEADLESS_ENTRYPOINTS
+
+
 def latest_transcript_for(cwd: Path | str, home: Path | None = None) -> Path | None:
-    """Most recently modified ``*.jsonl`` for this project, or None."""
+    """Most recently modified real session ``*.jsonl`` for this project, or None.
+
+    Skips headless `claude -p` transcripts (entrypoint ``sdk-cli``) so RedPen
+    never auto-discovers its own judge/decompose calls.
+    """
     base = transcript_base(home)
+    candidates: list[Path] = []
     for d in _candidate_dirs(cwd, base):
         if d.is_dir():
-            files = sorted(d.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
-            if files:
-                return files[0]
+            candidates.extend(d.glob("*.jsonl"))
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    for path in candidates:
+        if not is_headless_transcript(path):
+            return path
     return None
 
 
@@ -137,6 +175,8 @@ def parse_transcript(path: Path | str) -> Transcript:
                 t.session_id = line["sessionId"]
             if not t.cwd and line.get("cwd"):
                 t.cwd = line["cwd"]
+            if not t.entrypoint and line.get("entrypoint"):
+                t.entrypoint = line["entrypoint"]
 
             ltype = line.get("type")
 

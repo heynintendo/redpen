@@ -1,6 +1,9 @@
 # RedPen ledger lives here; never commit a project's local verdict history.
 .redpen/
 
+# Personal Claude Code settings (where `redpen install-hook` writes its hook).
+.claude/settings.local.json
+
 # Python
 __pycache__/
 *.py[cod]

@@ -7,6 +7,8 @@ specifically asserts the branch is synced with the remote.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from ..util import run
 from .base import ProbeContext, ProbeResult, fail, ok, unverifiable
 
@@ -16,19 +18,54 @@ def _is_git_repo(ctx: ProbeContext) -> bool:
     return rc == 0 and out.strip() == "true"
 
 
+def _in_progress_op(ctx: ProbeContext) -> str | None:
+    """Name of an in-flight git operation (rebase/merge/...), or None."""
+    rc, gd, _ = run(["git", "rev-parse", "--absolute-git-dir"], cwd=ctx.cwd)
+    if rc != 0:
+        return None
+    g = Path(gd.strip())
+    if (g / "rebase-merge").exists() or (g / "rebase-apply").exists():
+        return "rebase"
+    if (g / "MERGE_HEAD").exists():
+        return "merge"
+    if (g / "CHERRY_PICK_HEAD").exists():
+        return "cherry-pick"
+    if (g / "REVERT_HEAD").exists():
+        return "revert"
+    return None
+
+
 def git_pushed(ctx: ProbeContext, **_: object) -> ProbeResult:
     """Verify a "pushed to remote" claim via the upstream tracking branch.
 
-    Uses ``git rev-list --count @{u}..HEAD`` -- local, no network. With no
-    upstream we genuinely cannot tell, so UNVERIFIABLE (not FAIL).
+    Uses ``git rev-list --count @{u}..HEAD`` -- local, no network. Every state
+    where we can't actually compare (no upstream, no remote, detached HEAD, no
+    commits, mid-rebase/merge) is UNVERIFIABLE, never FAIL.
     """
     if not _is_git_repo(ctx):
         return unverifiable("git_pushed", "not a git repository")
+
+    op = _in_progress_op(ctx)
+    if op:
+        return unverifiable("git_pushed", f"{op} in progress; repository state is mid-flight", operation=op)
+
+    # Unborn branch / zero commits -> nothing to have pushed.
+    rc, _, _ = run(["git", "rev-parse", "--verify", "-q", "HEAD"], cwd=ctx.cwd)
+    if rc != 0:
+        return unverifiable("git_pushed", "no commits yet (unborn branch)")
+
+    # Detached HEAD -> not on a branch, so no upstream to compare.
+    rc_sym, _, _ = run(["git", "symbolic-ref", "-q", "HEAD"], cwd=ctx.cwd)
+    if rc_sym != 0:
+        return unverifiable("git_pushed", "detached HEAD; not on a branch to compare")
 
     rc, upstream, _ = run(
         ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], cwd=ctx.cwd
     )
     if rc != 0:
+        _, remotes, _ = run(["git", "remote"], cwd=ctx.cwd)
+        if not remotes.strip():
+            return unverifiable("git_pushed", "no remote configured (nothing to push to)", upstream=None)
         return unverifiable(
             "git_pushed",
             "no upstream branch configured (nothing to compare against)",
@@ -56,7 +93,12 @@ def git_pushed(ctx: ProbeContext, **_: object) -> ProbeResult:
 
 
 def git_clean(ctx: ProbeContext, **_: object) -> ProbeResult:
-    """Verify a "committed everything / working tree clean" claim."""
+    """Verify a "committed everything / working tree clean" claim.
+
+    ``git status --porcelain`` excludes ignored files by default and reports
+    staged / modified / untracked distinctly. Any of them contradicts a
+    "clean / committed everything" claim, so FAIL with the breakdown.
+    """
     if not _is_git_repo(ctx):
         return unverifiable("git_clean", "not a git repository")
 
@@ -64,14 +106,37 @@ def git_clean(ctx: ProbeContext, **_: object) -> ProbeResult:
     if rc != 0:
         return unverifiable("git_clean", "could not read git status")
 
-    changes = [ln for ln in out.splitlines() if ln.strip()]
-    if not changes:
-        return ok("git_clean", "working tree is clean", changes=0)
+    lines = [ln for ln in out.splitlines() if ln.strip()]
+    if not lines:
+        return ok("git_clean", "working tree is clean", staged=0, modified=0, untracked=0)
+
+    staged = modified = untracked = 0
+    files: list[str] = []
+    for ln in lines:
+        x, y = ln[0], ln[1]
+        files.append(ln[3:])
+        if x == "?" and y == "?":
+            untracked += 1
+        else:
+            if x not in (" ", "?"):
+                staged += 1
+            if y not in (" ", "?"):
+                modified += 1
+
+    parts = []
+    if staged:
+        parts.append(f"{staged} staged")
+    if modified:
+        parts.append(f"{modified} modified")
+    if untracked:
+        parts.append(f"{untracked} untracked")
     return fail(
         "git_clean",
-        f"{len(changes)} uncommitted change(s) in the working tree",
-        changes=len(changes),
-        files=[ln[3:] for ln in changes[:20]],
+        f"{len(lines)} uncommitted change(s): {', '.join(parts)}",
+        staged=staged,
+        modified=modified,
+        untracked=untracked,
+        files=files[:20],
     )
 
 

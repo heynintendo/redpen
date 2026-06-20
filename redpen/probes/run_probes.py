@@ -136,7 +136,11 @@ def _run_gated(ctx, probe, detect, transcript_keywords):
         if rc == RC_NOT_FOUND:
             return unverifiable(probe, f"could not run `{display}` (executable not found)", command=display)
         if rc == RC_TIMEOUT:
-            return unverifiable(probe, f"`{display}` timed out before finishing", command=display)
+            return unverifiable(probe, f"`{display}` timed out before finishing", command=display, exit_code=RC_TIMEOUT)
+        # pytest exit 5 == "no tests were collected". Nothing ran, so we can't
+        # confirm tests pass -> UNVERIFIABLE, never OK and never FAIL.
+        if display == "pytest" and rc == 5:
+            return unverifiable(probe, "no tests were collected (pytest exit 5)", command=display, exit_code=5)
         tail = (err or out).strip().splitlines()[-1:] or [""]
         if rc == 0:
             return ok(probe, f"`{display}` exited 0", command=display, exit_code=0, ran=True)
@@ -162,8 +166,42 @@ def _run_gated(ctx, probe, detect, transcript_keywords):
     return ok(probe, f"`{display}` ran clean this session", command=display, ran=True, source="transcript")
 
 
+def _present_test_runners(cwd: Path) -> list[str]:
+    """All test runners configured in this project (for monorepo/ambiguity notes)."""
+    runners: list[str] = []
+    scripts = _package_scripts(cwd)
+    if scripts.get("test") and "no test specified" not in scripts.get("test", ""):
+        runners.append("npm test")
+    if (
+        "pytest" in _read(cwd / "pyproject.toml")
+        or (cwd / "pytest.ini").is_file()
+        or "pytest" in _read(cwd / "setup.cfg")
+        or "[tool:pytest]" in _read(cwd / "tox.ini")
+        or (cwd / "tests").is_dir()
+        or any(cwd.glob("test_*.py"))
+        or any(cwd.glob("*_test.py"))
+    ):
+        runners.append("pytest")
+    if (cwd / "Cargo.toml").is_file():
+        runners.append("cargo test")
+    if (cwd / "go.mod").is_file():
+        runners.append("go test")
+    if "test" in _makefile_targets(cwd):
+        runners.append("make test")
+    return runners
+
+
 def tests_pass(ctx: ProbeContext, **_: object) -> ProbeResult:
-    return _run_gated(ctx, "tests_pass", detect_test_command, ["pytest", "npm test", "npm run test", "cargo test", "go test", "make test"])
+    res = _run_gated(
+        ctx, "tests_pass", detect_test_command,
+        ["pytest", "npm test", "npm run test", "cargo test", "go test", "make test"],
+    )
+    # Surface monorepo/multi-runner ambiguity without changing the verdict.
+    runners = _present_test_runners(Path(ctx.cwd))
+    if len(runners) > 1:
+        res.evidence["runners_detected"] = runners
+        res.evidence["note"] = f"multiple test runners present ({', '.join(runners)}); used the first"
+    return res
 
 
 def build_ok(ctx: ProbeContext, **_: object) -> ProbeResult:

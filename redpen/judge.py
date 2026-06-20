@@ -65,6 +65,12 @@ def _run_claude(prompt: str, model: str, timeout: float) -> tuple[int, str, str]
             text=True,
             timeout=timeout,
             env=env,
+            # Run from a neutral dir: Claude Code writes a transcript keyed on
+            # cwd, so running here (not the project) keeps RedPen's own headless
+            # calls out of the project's transcript dir (belt-and-suspenders with
+            # the sdk-cli discovery filter). The judge needs no project files --
+            # all evidence is in the prompt.
+            cwd=tempfile.gettempdir(),
         )
         return proc.returncode, proc.stdout, proc.stderr
     except subprocess.TimeoutExpired:
@@ -238,40 +244,44 @@ def decompose_request(
 
 
 def audit_request(
-    asked: list[str],
+    request_text: str,
     claimed: list[str],
     verdicts: list[tuple[str, str, str]],
     model: str | None = None,
     timeout: float | None = None,
 ) -> list[dict]:
-    """Reconcile asked-for items against claims and RedPen's evidence verdicts.
+    """Audit a request end-to-end in ONE call: decompose it, then reconcile.
 
-    ``verdicts`` is a list of (subject, verdict, detail). Returns a list of
-    {item, status, note} where status is DONE | UNSUBSTANTIATED | SKIPPED.
-    Empty on any failure. Sees ONLY the provided text -- never the codebase.
+    Takes the raw user request, breaks it into the things asked for, and
+    classifies each against what the assistant claimed and RedPen's evidence
+    verdicts -- all in a single headless turn (half the latency/cost of doing
+    decompose and reconcile separately). ``verdicts`` is (subject, verdict,
+    detail). Returns [{item, status, note}] with status DONE | UNSUBSTANTIATED |
+    SKIPPED. Empty on any failure. Sees ONLY the provided text, never the codebase.
     """
     model = model or config.LLM_MODEL
     timeout = timeout if timeout is not None else config.JUDGE_TIMEOUT_SECONDS
-    if not asked:
+    request_text = (request_text or "").strip()
+    if not request_text:
         return []
 
-    asked_block = "\n".join(f"{i + 1}. {a}" for i, a in enumerate(asked))
     claimed_block = "\n".join(f"- {c}" for c in claimed[:20]) or "- (the assistant claimed nothing specific)"
     verdict_block = "\n".join(f"- {s} -> {v}: {d}" for s, v, d in verdicts[:30]) or "- (no probe verdicts)"
 
     prompt = (
         "You audit whether a coding request was fully satisfied. You see ONLY: "
-        "what was asked, what the assistant claimed, and RedPen's evidence-based "
+        "the user's request, what the assistant claimed, and RedPen's evidence-based "
         "verdicts. You cannot see the codebase; assume nothing beyond this.\n\n"
-        f"ASKED:\n{asked_block}\n\n"
+        f"USER REQUEST:\n{request_text[:3000]}\n\n"
         f"ASSISTANT CLAIMED:\n{claimed_block}\n\n"
         f"REDPEN VERDICTS (subject -> verdict: detail):\n{verdict_block}\n\n"
-        "For each ASKED item, classify:\n"
+        "First break the request into the concrete, separately-checkable things "
+        "asked for (max 8). Then classify each:\n"
         '- "DONE": addressed by a claim AND RedPen evidence supports it.\n'
-        '- "UNSUBSTANTIATED": claimed but evidence is FAIL or UNVERIFIABLE.\n'
+        '- "UNSUBSTANTIATED": claimed but evidence is FAIL/UNVERIFIABLE or absent.\n'
         '- "SKIPPED": not addressed by any claim.\n'
         "Output ONLY a JSON array: "
-        '[{"item":"<asked item>","status":"DONE|UNSUBSTANTIATED|SKIPPED","note":"<=12 words"}]'
+        '[{"item":"<asked-for item>","status":"DONE|UNSUBSTANTIATED|SKIPPED","note":"<=12 words"}]'
     )
     rc, stdout, _ = _run_claude(prompt, model, timeout)
     if rc != 0:

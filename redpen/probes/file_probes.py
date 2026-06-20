@@ -11,52 +11,77 @@ _STUB_RE = re.compile(r"\braise\s+NotImplementedError\b")
 _TODO_RE = re.compile(r"\b(TODO|FIXME|XXX)\b")
 
 
-def file_present(ctx: ProbeContext, path: str | None = None, **_: object) -> ProbeResult:
-    """Verify a "created/wrote <path>" claim.
+# Files this small get read to check for whitespace-only content; larger files
+# are taken as having real content without a read.
+_WHITESPACE_SCAN_LIMIT = 64 * 1024
 
-    Success condition: the file exists and is non-empty. A missing file
-    *contradicts* the claim (FAIL). An empty file contradicts a "wrote
-    content" claim too, but with a distinct detail so the user can tell the
-    difference. A present, non-empty file is OK and we report its mtime.
+
+def file_present(ctx: ProbeContext, path: str | None = None, **_: object) -> ProbeResult:
+    """Verify a "created/wrote <path>" claim. Precision-first.
+
+    Only a *missing* path contradicts "created <path>" -> FAIL. Everything
+    ambiguous is UNVERIFIABLE, never FAIL: an empty file, a whitespace-only
+    file, an empty directory, or a symlink whose target is missing. A present,
+    non-empty file (or non-empty directory) is OK. Resolves relative paths
+    against the project root; absolute paths are used as-is.
     """
     if not path:
         return unverifiable("file_present", "no path supplied to verify")
 
     p = ctx.resolve(path)
+
+    # A symlink that points nowhere exists as a link but has no content -> can't
+    # confirm the claim, and its absence-of-target isn't a contradiction.
+    if p.is_symlink() and not p.exists():
+        return unverifiable(
+            "file_present",
+            f"{path} is a symlink with a missing target",
+            exists=True, symlink=True, target_exists=False, path=str(p),
+        )
+
     if not p.exists():
         return fail("file_present", f"{path} does not exist", exists=False, path=str(p))
 
     if p.is_dir():
-        # A directory satisfies "created <dir>" if it has any contents.
         entries = list(p.iterdir())
         if entries:
             return ok(
                 "file_present",
-                f"{path}/ exists ({len(entries)} entries)",
-                exists=True,
-                is_dir=True,
-                entries=len(entries),
+                f"{path} exists (directory, {len(entries)} entries)",
+                exists=True, is_dir=True, entries=len(entries),
             )
-        return fail("file_present", f"{path}/ exists but is empty", exists=True, is_dir=True, entries=0)
+        return unverifiable(
+            "file_present",
+            f"{path} exists but is an empty directory",
+            exists=True, is_dir=True, entries=0,
+        )
 
     stat = p.stat()
-    size = stat.st_size
-    mtime = stat.st_mtime
+    size, mtime, is_link = stat.st_size, stat.st_mtime, p.is_symlink()
+
     if size == 0:
-        return fail(
+        return unverifiable(
             "file_present",
             f"{path} exists but is empty (0 bytes)",
-            exists=True,
-            size=0,
-            mtime=mtime,
+            exists=True, size=0, mtime=mtime, symlink=is_link,
         )
+
+    if size <= _WHITESPACE_SCAN_LIMIT:
+        try:
+            text = p.read_text(errors="replace")
+        except OSError:
+            text = None
+        if text is not None and text.strip() == "":
+            return unverifiable(
+                "file_present",
+                f"{path} exists but contains only whitespace",
+                exists=True, size=size, mtime=mtime,
+            )
 
     return ok(
         "file_present",
         f"{path} present ({size} bytes)",
-        exists=True,
-        size=size,
-        mtime=mtime,
+        exists=True, size=size, mtime=mtime, symlink=is_link,
     )
 
 

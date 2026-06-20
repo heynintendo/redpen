@@ -7,6 +7,8 @@ appears, so a fork only needs to change this single constant.
 
 from __future__ import annotations
 
+import os
+
 # The product name. Referenced everywhere the name is surfaced.
 TOOL_NAME = "RedPen"
 
@@ -32,8 +34,9 @@ LEDGER_DB = "ledger.db"
 ENABLE_LLM = True
 
 # Model the judge invokes via `claude -p --model <LLM_MODEL>`. Default sonnet
-# for stronger judgement; switch this one line to "haiku" for faster/cheaper.
-LLM_MODEL = "sonnet"
+# for stronger judgement; switch to "haiku" for a faster/cheaper pass. Override
+# without editing code via the REDPEN_LLM_MODEL env var (handy for CI/demos).
+LLM_MODEL = os.environ.get("REDPEN_LLM_MODEL", "sonnet")
 
 # Hard timeout (seconds) for a single headless `claude -p` judge call.
 JUDGE_TIMEOUT_SECONDS = 30

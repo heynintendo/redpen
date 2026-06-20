@@ -69,6 +69,18 @@ FILE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# An assertive accomplishment sentence ("I refactored the parser") even when it
+# names nothing a probe can check. Used by the catch-all so such a claim becomes
+# a labelled UNVERIFIABLE line instead of being silently dropped.
+CLAIM_LIKE_RE = re.compile(
+    r"\b(?:created|added|wrote|implemented|refactored|fixed|resolved|removed|deleted|"
+    r"renamed|moved|configured|installed|set up|setup|updated|changed|built|generated|"
+    r"enabled|disabled|migrated|integrated|wired|replaced|introduced|cleaned up|"
+    r"rewrote|extracted|optimi[sz]ed|documented)\b",
+    re.IGNORECASE,
+)
+
+
 # Generic "done / complete / ready / finished" -> run the default suite.
 DONE_RE = re.compile(
     r"\b(done|complete[ds]?|finished|ready|all set|good to go|"
