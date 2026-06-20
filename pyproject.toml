@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "redpen"
+version = "0.1.0"
+description = "A fast, brutal verifier that checks whether Claude Code's claims of completion are actually true."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "RedPen contributors" }]
+keywords = ["claude-code", "verification", "agent", "cli"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Quality Assurance",
+]
+# Dependency-light on purpose: stdlib only, for a sub-2s cold start.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.urls]
+Homepage = "https://github.com/heynintendo/redpen"
+Issues = "https://github.com/heynintendo/redpen/issues"
+
+[project.scripts]
+redpen = "redpen.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["redpen"]
+
+# Ship the ANSI mascot inside the wheel so installed copies render the header.
+[tool.hatch.build.targets.wheel.force-include]
+"docs/mascot_ansi.txt" = "redpen/_assets/mascot_ansi.txt"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
