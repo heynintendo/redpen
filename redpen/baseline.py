@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,6 +21,48 @@ from .config import LEDGER_DIR
 from .util import run
 
 BASELINE_FILE = "baseline.json"
+
+# Dirs the filesystem snapshot skips (noise / caches), plus a hard file cap so a
+# huge tree never blows up the snapshot.
+_IGNORE_DIRS = {
+    ".git", ".hg", ".svn", "node_modules", ".venv", "venv", "__pycache__",
+    ".redpen", ".pytest_cache", "dist", "build", ".mypy_cache", ".ruff_cache",
+    ".next", "target", ".tox", ".idea", ".gradle", ".cache",
+}
+_WALK_CAP = 5000
+
+
+def walk_files(root: Path | str):
+    """Yield (relpath, abspath) for files under root, skipping noise dirs, capped.
+
+    This is the filesystem evidence source -- it needs no git, so created/
+    modified-file claims resolve in a plain folder too.
+    """
+    root = Path(root)
+    count = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in _IGNORE_DIRS and not d.startswith(".")]
+        for fn in filenames:
+            if count >= _WALK_CAP:
+                return
+            ap = Path(dirpath) / fn
+            try:
+                rel = str(ap.relative_to(root))
+            except ValueError:
+                continue
+            count += 1
+            yield rel, ap
+
+
+def fs_snapshot(root: Path | str) -> dict[str, float]:
+    """A {relpath: mtime} snapshot of the (bounded) working tree."""
+    snap: dict[str, float] = {}
+    for rel, ap in walk_files(root):
+        try:
+            snap[rel] = ap.stat().st_mtime
+        except OSError:
+            continue
+    return snap
 
 
 def baseline_path(project_root: Path | str) -> Path:
@@ -68,6 +111,9 @@ def write_baseline(project_root: Path | str, session_id: str = "") -> Path:
         "branch": _git(["rev-parse", "--abbrev-ref", "HEAD"], root).strip() or None,
         "status": status,
         "hashes": hashes,
+        # Filesystem snapshot (mtimes) -- the no-git evidence source for the
+        # session changed-set.
+        "fs": fs_snapshot(root),
         "session_id": session_id,
         "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }

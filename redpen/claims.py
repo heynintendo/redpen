@@ -44,8 +44,11 @@ def default_suite() -> list[ProbeSpec]:
     default path stays offline and under the speed budget. Those run only when
     a claim explicitly mentions branch-sync or a PR.
     """
+    git = {"git_pushed", "git_clean"}
     names = ["git_pushed", "git_clean", "tests_pass", "todos_remaining", "contradiction_scan"]
-    return [ProbeSpec(n, label=PROBE_SUBJECT.get(n)) for n in names]
+    # git probes are optional here: in a non-git folder they're omitted rather
+    # than run, so a generic "done" never produces git noise without a repo.
+    return [ProbeSpec(n, label=PROBE_SUBJECT.get(n), optional=(n in git)) for n in names]
 
 
 def _split_sentences(text: str) -> list[str]:
@@ -65,6 +68,11 @@ def _split_sentences(text: str) -> list[str]:
 
 
 def _specs_for_sentence(s: str) -> list[ProbeSpec]:
+    # Skip non-claims ("nothing to report", "generated zero files", "didn't ...")
+    # so they never produce filler UNVERIFIABLE lines.
+    if patterns.is_non_claim(s):
+        return []
+
     specs: list[ProbeSpec] = []
 
     for m in patterns.FILE_RE.finditer(s):
@@ -115,24 +123,40 @@ def _specs_for_sentence(s: str) -> list[ProbeSpec]:
 
 
 def _dedupe(specs: list[ProbeSpec]) -> list[ProbeSpec]:
-    seen: set = set()
-    out: list[ProbeSpec] = []
+    kept: dict = {}
+    order: list = []
     for spec in specs:
-        if spec.key() not in seen:
-            seen.add(spec.key())
-            out.append(spec)
-    return out
+        k = spec.key()
+        if k not in kept:
+            kept[k] = spec
+            order.append(k)
+        elif kept[k].optional and not spec.optional:
+            kept[k] = spec  # prefer the explicit (non-optional) spec
+    return [kept[k] for k in order]
 
 
 def _dedupe_across_claims(claims: list[Claim]) -> list[Claim]:
     """Drop a probe if an identical (name, kwargs) already ran for an earlier
     claim, so two "done"-ish sentences don't each expand the whole default suite.
+    Prefer a non-optional (explicit) spec over an optional one for the same key.
     """
-    seen: set = set()
+    winner: dict = {}
+    for claim in claims:
+        for s in claim.probe_specs:
+            k = s.key()
+            if k not in winner or (winner[k].optional and not s.optional):
+                winner[k] = s
+    emitted: set = set()
     out: list[Claim] = []
     for claim in claims:
-        kept = [s for s in claim.probe_specs if s.key() not in seen]
-        seen.update(s.key() for s in kept)
+        kept = []
+        for s in claim.probe_specs:
+            k = s.key()
+            if k in emitted:
+                continue
+            if s is winner[k]:
+                kept.append(s)
+                emitted.add(k)
         if kept:
             claim.probe_specs = kept
             out.append(claim)
@@ -159,6 +183,26 @@ def extract_claims(text: str, source: str = "transcript") -> list[Claim]:
     if source == "adhoc":
         return [Claim(text=label, probe_specs=[ProbeSpec("unmapped", label=label[:80])], source=source)]
     return []
+
+
+# Probes that only make sense inside a git repository.
+GIT_PROBES = {"git_pushed", "git_clean", "branch_synced", "pr_status"}
+
+
+def drop_inapplicable_git_probes(claims: list[Claim], is_git: bool) -> list[Claim]:
+    """In a non-git folder, omit the generic-suite git probes entirely (they'd be
+    noise), keeping only *explicit* git claims (which then FAIL as contradictions
+    -- you can't push/commit in a non-repo). No-op inside a git repository.
+    """
+    if is_git:
+        return claims
+    out: list[Claim] = []
+    for claim in claims:
+        kept = [s for s in claim.probe_specs if not (s.name in GIT_PROBES and s.optional)]
+        if kept:
+            claim.probe_specs = kept
+            out.append(claim)
+    return out
 
 
 def claims_from_transcript(transcript: Transcript) -> list[Claim]:

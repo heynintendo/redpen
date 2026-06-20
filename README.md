@@ -17,6 +17,9 @@ real system state. Claim vs. reality. Three verdicts, no hedging.
 - **Three verdicts only.** `OK` (evidence substantiates the claim), `FAIL`
   (evidence *contradicts* it), `UNVERIFIABLE` (can't tell). It cries `FAIL`
   only on contradiction — never on absent evidence. Precision over recall.
+- **Works in any folder, git or not.** Git is one optional evidence source.
+  The transcript and the filesystem resolve "created/modified X" and "tests
+  pass" without a repo; git-only probes are simply skipped where there's no repo.
 - **Fast.** The deterministic path finishes in under 2 seconds and makes no
   network calls except an explicit `git`/`gh` remote probe. Run it after every
   task.
@@ -74,12 +77,30 @@ a hook on it.
 | **Claim extractor** | Finds the latest Claude Code transcript for this directory, reads the final message, maps each success assertion to probes. |
 | **Probes** | Small, self-contained checks: `git_pushed`, `git_clean`, `file_present`, `tests_pass`, `build_ok`, `lint_clean`, `branch_synced`, `pr_status`, `todos_remaining`, `dep_present`, `typecheck_clean`, `test_count`, `symbol_exists`, and `contradiction_scan`. Each returns a structured evidence dict. |
 | **Contradiction engine** | Scans the agent's **own captured tool output** for failure signatures (pytest `N failed`, `AssertionError`, build/compiler errors). When a "tests pass / build succeeds / done" claim is contradicted by a failure the agent itself printed, it `FAIL`s and quotes the line — no re-execution, incontestable. |
-| **Session-scoping** | A "created/added X" claim is checked against the **session changed-set** (transcript edits + git delta vs a task-start baseline), not just whether the file exists. A pre-existing file the agent never touched is `UNVERIFIABLE`, not a false `OK`. |
+| **Session-scoping** | A "created/added/modified X" claim is checked against the **session changed-set**, not just whether the file exists. A pre-existing file the agent never touched is `UNVERIFIABLE`, not a false `OK`. |
 | **Custom rules** | `.redpen.yml` maps claim patterns to your own verification commands — the lever for stack-specific claims (deploys, migrations, codegen). See below. |
 | **explain** | Numbers every verdict; `redpen explain <n>` shows the commands, evidence, and reason behind it (persisted to `.redpen/last_run.json`). |
 | **Ledger** | SQLite at `.redpen/ledger.db` records every verdict so a later session can ask what was claimed before. |
 | **Judge** *(--deep)* | Resolves `UNVERIFIABLE` claims from the gathered evidence alone, via one headless `claude -p` turn. Never reads the codebase. Verdicts are cached by evidence hash, so identical evidence never re-spends quota. |
 | **Request audit** *(--deep)* | Decomposes your last request and reconciles asked-for vs. claimed vs. evidenced, flagging silent gaps. |
+
+### Evidence sources (git is optional)
+
+RedPen works in **any folder, repo or not**, combining whatever evidence exists:
+
+| Source | Contributes |
+|--------|-------------|
+| **Transcript** *(primary)* | What the agent did — Write/Edit/MultiEdit files, and the commands it ran with their output. Needs no git. |
+| **Filesystem** | A delta vs the task-start baseline snapshot (`.redpen/baseline.json`, mtimes) — catches files created/modified outside the transcript (e.g. via Bash). Needs no git. |
+| **Git** *(when a repo)* | A corroborating diff vs the baseline HEAD, plus the `git_*`/`pr_status` probes. |
+
+In a **non-git folder**, the git-only probes (`git_pushed`, `git_clean`,
+`branch_synced`, `pr_status`) are **omitted** rather than reported as
+`UNVERIFIABLE` — unless a claim explicitly asserts one of those git concepts,
+in which case it's a `FAIL` (you can't have pushed from a folder that isn't a
+repo). Everything else — `file_present`, `tests_pass`, `build_ok`,
+`lint_clean`, `typecheck_clean`, `dep_present`, `test_count`, `symbol_exists`,
+and the contradiction engine — is first-class without git.
 
 ### Tests, builds and linters are verified from the transcript
 

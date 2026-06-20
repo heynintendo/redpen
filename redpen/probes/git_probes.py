@@ -43,7 +43,10 @@ def git_pushed(ctx: ProbeContext, **_: object) -> ProbeResult:
     commits, mid-rebase/merge) is UNVERIFIABLE, never FAIL.
     """
     if not _is_git_repo(ctx):
-        return unverifiable("git_pushed", "not a git repository")
+        # Reached only for an explicit "pushed" claim (the generic-suite git
+        # probes are dropped in a non-git folder). You can't push from a folder
+        # that isn't a repo -> the claim is contradicted.
+        return fail("git_pushed", "claimed a push, but this is not a git repository", git=False)
 
     op = _in_progress_op(ctx)
     if op:
@@ -100,7 +103,7 @@ def git_clean(ctx: ProbeContext, **_: object) -> ProbeResult:
     "clean / committed everything" claim, so FAIL with the breakdown.
     """
     if not _is_git_repo(ctx):
-        return unverifiable("git_clean", "not a git repository")
+        return fail("git_clean", "claimed a commit, but this is not a git repository", git=False)
 
     rc, out, _ = run(["git", "status", "--porcelain"], cwd=ctx.cwd)
     if rc != 0:
@@ -148,7 +151,7 @@ def branch_synced(ctx: ProbeContext, **_: object) -> ProbeResult:
     not contradict the claim.
     """
     if not _is_git_repo(ctx):
-        return unverifiable("branch_synced", "not a git repository")
+        return fail("branch_synced", "claimed branch sync, but this is not a git repository", git=False)
 
     rc, upstream, _ = run(["git", "rev-parse", "--abbrev-ref", "@{u}"], cwd=ctx.cwd)
     if rc != 0:

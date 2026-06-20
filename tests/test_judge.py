@@ -180,15 +180,15 @@ def test_engine_only_judges_unverifiable_results(monkeypatch):
             probe_specs=[
                 ProbeSpec("file_present", {"path": "here.txt"}),   # -> OK
                 ProbeSpec("file_present", {"path": "gone.txt"}),   # -> FAIL
-                ProbeSpec("git_pushed"),                           # -> UNVERIFIABLE (no repo)
+                ProbeSpec("tests_pass"),                           # -> UNVERIFIABLE (no runner)
             ],
         )
         findings = verify([claim], ProbeContext(cwd=Path(d)), judge=fake_judge)
 
     verdicts = {f.result.probe: f.result.verdict for f in findings}
-    # Only the UNVERIFIABLE one (git_pushed) was sent to the judge.
-    assert seen == ["git_pushed"]
-    assert verdicts["git_pushed"] is Verdict.OK  # upgraded by the judge
+    # Only the UNVERIFIABLE one (tests_pass) was sent to the judge.
+    assert seen == ["tests_pass"]
+    assert verdicts["tests_pass"] is Verdict.OK  # upgraded by the judge
 
 
 # --- safety constraints: real _run_claude, subprocess.run mocked ------------

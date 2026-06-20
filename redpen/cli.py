@@ -92,6 +92,15 @@ def cmd_check(args: argparse.Namespace) -> int:
     else:
         claims = []
 
+    # Git is one optional evidence source. In a non-git folder, omit the
+    # generic git probes (no noise); explicit git claims stay and FAIL.
+    from .changeset import is_git_repo
+
+    is_git = is_git_repo(project_root)
+    from .claims import drop_inapplicable_git_probes
+
+    claims = drop_inapplicable_git_probes(claims, is_git)
+
     if not claims:
         p = Palette(_supports_color(sys.stdout) if color is None else color)
         header = render_header(show_art, color)

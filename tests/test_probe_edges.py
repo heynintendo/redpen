@@ -128,8 +128,14 @@ def test_branch_synced_unreachable_remote_is_unverifiable(git_repo, commit, git,
     assert res.verdict is Verdict.UNVERIFIABLE  # can't reach remote != contradiction
 
 
+def _repo_then(answer):
+    # pr_status first runs `git rev-parse` (treat as a repo), then the gh checks.
+    return lambda cmd, *a, **k: (0, "true", "") if "rev-parse" in cmd else answer
+
+
 def test_pr_status_gh_missing_is_unverifiable(monkeypatch, tmp_path):
     monkeypatch.setattr(gp.shutil, "which", lambda name: None)
+    monkeypatch.setattr(gp, "run", _repo_then((0, "", "")))  # inside a repo
     res = pr_status(ProbeContext(cwd=tmp_path))
     assert res.verdict is Verdict.UNVERIFIABLE
     assert "gh" in res.detail.lower()
@@ -137,10 +143,17 @@ def test_pr_status_gh_missing_is_unverifiable(monkeypatch, tmp_path):
 
 def test_pr_status_unauthenticated_is_unverifiable(monkeypatch, tmp_path):
     monkeypatch.setattr(gp.shutil, "which", lambda name: "/usr/bin/gh")
-    monkeypatch.setattr(gp, "run", lambda *a, **k: (1, "", "not logged in"))
+    monkeypatch.setattr(gp, "run", _repo_then((1, "", "not logged in")))
     res = pr_status(ProbeContext(cwd=tmp_path))
     assert res.verdict is Verdict.UNVERIFIABLE
     assert "auth" in res.detail.lower()
+
+
+def test_pr_claim_in_non_git_folder_is_fail(monkeypatch, tmp_path):
+    monkeypatch.setattr(gp, "run", lambda *a, **k: (128, "", "not a git repo"))
+    res = pr_status(ProbeContext(cwd=tmp_path))
+    assert res.verdict is Verdict.FAIL
+    assert "not a git repository" in res.detail
 
 
 # --- exit_code_scan: never infer FAIL from a missing exit code --------------

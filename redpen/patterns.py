@@ -63,11 +63,31 @@ def mentions_tests_passing(sentence: str) -> bool:
 # dot-extension or a slash). Tight on purpose so "version 0.1" never matches.
 FILE_RE = re.compile(
     r"\b(?:creat(?:e|ed)|wr(?:ote|itten)|add(?:ed)?|generat(?:e|ed)|"
-    r"sav(?:e|ed)|updat(?:e|ed)|implement(?:ed)?)\b"
+    r"sav(?:e|ed)|updat(?:e|ed)|modif(?:y|ied)|edit(?:ed)?|chang(?:e|ed)|"
+    r"implement(?:ed)?)\b"
     r"\s+(?:the\s+|a\s+|an\s+|new\s+)?(?:file\s+|module\s+|script\s+)?"
     r"[`'\"]?(?P<path>[\w./\-]+(?:/[\w.\-]+|\.[A-Za-z0-9]+))[`'\"]?",
     re.IGNORECASE,
 )
+
+# Non-claims: a sentence asserting that NOTHING was done (or describing session
+# state) is not a completion claim and must not produce a verdict line. Kept
+# specific so it never swallows a real positive like "no type errors".
+NON_CLAIM_RE = re.compile(
+    r"\bnothing\s+(?:to|was|else|much|changed|left)\b"
+    r"|\bno\s+(?:files?|changes?|commits?|edits?|work|action)\b"
+    r"|\b(?:zero|no)\s+files?\b|\bgenerated\s+(?:zero|no|0)\b|\b0\s+files?\b"
+    r"|\bfresh\s+session\b|\bnew\s+session\b|\bempty\s+session\b|\bno-?op\b"
+    r"|\bdid\s*n[o']?t\b|\bdo\s*n[o']?t\b|\bdoes\s*n[o']?t\b|\bwas\s*n[o']?t\b"
+    r"|\bwere\s*n[o']?t\b|\bhave\s*n[o']?t\b|\bhas\s*n[o']?t\b"
+    r"|\bnot\s+(?:yet\s+)?(?:created|added|written|implemented|done|made|pushed|committed)\b",
+    re.IGNORECASE,
+)
+
+
+def is_non_claim(sentence: str) -> bool:
+    """True if the sentence asserts nothing-was-done / session state, not a claim."""
+    return bool(NON_CLAIM_RE.search(sentence))
 
 # An assertive accomplishment sentence ("I refactored the parser") even when it
 # names nothing a probe can check. Used by the catch-all so such a claim becomes

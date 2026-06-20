@@ -100,6 +100,11 @@ class ProbeSpec:
     name: str
     kwargs: dict[str, Any] = field(default_factory=dict)
     label: str | None = None
+    # ``optional`` probes (e.g. the git probes pulled in by a generic "done"
+    # claim) are omitted rather than run when they don't apply -- notably the
+    # git probes in a non-git folder. Not part of ``key`` so it never affects
+    # dedup; dedup prefers a non-optional spec over an optional one.
+    optional: bool = False
 
     def key(self) -> tuple:
         return (self.name, tuple(sorted(self.kwargs.items())))

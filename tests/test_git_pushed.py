@@ -86,9 +86,11 @@ def test_no_upstream_is_unverifiable(tmp_path):
     assert res.verdict is Verdict.UNVERIFIABLE
 
 
-def test_not_a_git_repo_is_unverifiable(tmp_path):
+def test_pushed_claim_in_non_git_folder_is_fail(tmp_path):
+    # You can't have pushed from a folder that isn't a repo -> contradiction.
     res = git_pushed(ProbeContext(cwd=tmp_path))
-    assert res.verdict is Verdict.UNVERIFIABLE
+    assert res.verdict is Verdict.FAIL
+    assert "not a git repository" in res.detail
 
 
 def test_zero_commits_is_unverifiable(tmp_path):

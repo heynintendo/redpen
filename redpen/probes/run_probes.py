@@ -151,13 +151,13 @@ def _run_gated(ctx, probe, detect, transcript_keywords, *, kind=None, multi_runn
     re-run); it ran and failed -> FAIL; it ran clean -> OK.
     """
     detected = detect(Path(ctx.cwd))
-    if detected is None:
-        return unverifiable(probe, "no command detected for this project")
-    cmd, display = detected
+    cmd, display = detected if detected else (None, None)
 
-    if ctx.run:
+    if ctx.run and cmd is not None:
         return _execute_run(ctx, probe, cmd, display)
 
+    # Transcript is primary -- and works with no project-file detection and no
+    # git: the run in the transcript is the evidence.
     # 1) incontestable: the agent's own output shows a failure of this kind.
     if kind and ctx.transcript is not None:
         fails = find_failures(ctx.transcript.tool_events, kind)
@@ -166,7 +166,7 @@ def _run_gated(ctx, probe, detect, transcript_keywords, *, kind=None, multi_runn
             return fail(
                 probe,
                 f"{kind} failed this session: {f0.line[:60]}",
-                command=(f0.command or display)[:200],
+                command=(f0.command or display or kind)[:200],
                 contradiction=f0.line,
                 source="transcript-output",
             )
@@ -183,16 +183,21 @@ def _run_gated(ctx, probe, detect, transcript_keywords, *, kind=None, multi_runn
 
     # 3) did the command run this session? (we never re-run on the default path)
     ev = _find_run_in_transcript(ctx, transcript_keywords)
-    if ev is None:
-        return unverifiable(
-            probe,
-            f"`{display}` was not run this session -- pass --run to re-execute (flaky, side-effecting)",
-            command=display,
-            ran=False,
-        )
-    if ev.failed:
-        return fail(probe, f"`{display}` failed this session", command=display, ran=True, source="transcript")
-    return ok(probe, f"`{display}` ran clean this session", command=display, ran=True, source="transcript")
+    if ev is not None:
+        label = display or (ev.command or ev.label)
+        if ev.failed:
+            return fail(probe, f"`{label}` failed this session", command=label, ran=True, source="transcript")
+        return ok(probe, f"`{label}` ran clean this session", command=label, ran=True, source="transcript")
+
+    # 4) nothing ran this session.
+    if detected is None:
+        return unverifiable(probe, "not run this session, and no runner is configured here", ran=False)
+    return unverifiable(
+        probe,
+        f"`{display}` was not run this session -- pass --run to re-execute (flaky, side-effecting)",
+        command=display,
+        ran=False,
+    )
 
 
 def _present_test_runners(cwd: Path) -> list[str]:

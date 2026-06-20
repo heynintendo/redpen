@@ -6,7 +6,7 @@ import json
 import shutil
 
 from ..util import run
-from .base import ProbeContext, ProbeResult, ok, unverifiable
+from .base import ProbeContext, ProbeResult, fail, ok, unverifiable
 
 
 def pr_status(ctx: ProbeContext, **_: object) -> ProbeResult:
@@ -16,6 +16,11 @@ def pr_status(ctx: ProbeContext, **_: object) -> ProbeResult:
     hint -- absence of the tool is not evidence the PR doesn't exist. A PR that
     exists for the current branch is OK and we report its state.
     """
+    rc, out, _ = run(["git", "rev-parse", "--is-inside-work-tree"], cwd=ctx.cwd)
+    if not (rc == 0 and out.strip() == "true"):
+        # A PR requires a git repository -> claiming one here is a contradiction.
+        return fail("pr_status", "claimed a PR, but this is not a git repository", git=False)
+
     if shutil.which("gh") is None:
         return unverifiable(
             "pr_status",
