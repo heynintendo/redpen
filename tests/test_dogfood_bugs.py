@@ -235,3 +235,48 @@ def test_discovery_not_ambiguous_with_a_single_transcript(tmp_path):
                                         "message": {"role": "assistant", "content": [{"type": "text", "text": "x"}]}}])
     d = discover_transcript(cwd, home=home, session_id="")
     assert d.path is not None and not d.ambiguous and d.alternatives == 0
+
+
+# --- extraction priority: concrete claims beat a soft recap -----------------
+
+
+def test_recap_does_not_displace_concrete_claims_in_fixture():
+    # The fixture's final message has concrete creation/run claims AND a trailing
+    # "The work itself (...) — no probe covers this claim, take my word" recap.
+    claims = claims_from_transcript(parse_transcript(FIXTURE))
+    specs = [(s.name, s.kwargs.get("path")) for c in claims for s in c.probe_specs]
+    assert ("file_present", "~/sorting-algorithms/") in specs          # concrete claim graded
+    assert not any("work itself" in c.text.lower() for c in claims)    # recap not graded
+    assert not any("no probe" in c.text.lower() for c in claims)
+    # NOT the bug's "0 verified · 1 can't confirm" -- there's a real checkable claim
+    assert any(s.name == "file_present" for c in claims for s in c.probe_specs)
+
+
+def test_concrete_claim_beside_a_recap_is_the_only_thing_extracted():
+    msg = ("Created ~/proj/ with three files.\n"
+           "The work itself (folder created, files written) — no probe covers this claim, take my word for it.")
+    names = {s.name for c in extract_claims(msg, source="transcript") for s in c.probe_specs}
+    assert names == {"file_present"}  # the recap adds no second graded line
+
+
+def test_meta_recap_alone_is_not_graded():
+    # Recap prose that would otherwise be a vague `unmapped` line is dropped.
+    assert extract_claims("The work itself — no probe covers this claim, so take my word for it.",
+                          source="transcript") == []
+    assert extract_claims("The folder was created and files written, but no probe covers that.",
+                          source="transcript") == []
+
+
+def test_meta_language_never_suppresses_a_concrete_claim():
+    # "can't verify"/"no probe" in the SAME sentence as a real claim must not drop it.
+    for msg in ("I created app.py but can't verify it runs.",
+                "Created src/api.py; no probe will catch this but it's done."):
+        names = {s.name for c in extract_claims(msg, source="transcript") for s in c.probe_specs}
+        assert "file_present" in names, msg
+
+
+def test_substantive_work_claim_still_surfaces():
+    # "all three run correctly" is a real (if unverifiable) claim -> still surfaced.
+    names = {s.name for c in extract_claims("All three run and sorted correctly.", source="transcript")
+             for s in c.probe_specs}
+    assert "unmapped" in names

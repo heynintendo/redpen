@@ -195,6 +195,28 @@ WORKS_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Soft recap / meta-commentary, not a fresh claim: the agent restating work in an
+# explicitly-unverifiable framing ("take my word for it", "the work itself ..."),
+# or quoting RedPen's own verdict language back ("no probe covers this claim").
+# This ONLY gates the vague catch-all -- it never suppresses a concrete claim
+# (a path, commit, test, symbol), so when such prose sits beside real claims the
+# real claims are graded and the recap is skipped rather than substituted for them.
+META_RECAP_RE = re.compile(
+    r"\bno probe\b"
+    r"|\btake (?:my|your) word for it\b"
+    r"|\byou'?ll (?:just |simply )?have to (?:take my word|trust me|verify|confirm|check)\b"
+    r"|\btrust me on (?:this|that|it)\b"
+    r"|\bno way to (?:verify|confirm|check)\b"
+    r"|\b(?:can'?t|cannot) (?:be |really )?(?:verif|confirm)\w*\b"
+    r"|\bthe work itself\b",
+    re.IGNORECASE,
+)
+
+
+def is_meta_recap(sentence: str) -> bool:
+    """True if the sentence is soft recap / unverifiable-by-its-own-admission prose."""
+    return bool(META_RECAP_RE.search(sentence))
+
 
 # "all N tests pass" -> verify the exact count from the transcript.
 TEST_COUNT_RE = re.compile(
