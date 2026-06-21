@@ -46,7 +46,10 @@ def ledger_path(project_root: Path | str) -> Path:
 def _connect(project_root: Path | str) -> sqlite3.Connection:
     path = ledger_path(project_root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path))
+    # A busy timeout lets concurrent checks on the same project wait for the
+    # lock instead of dropping their write (the soak hammers this).
+    conn = sqlite3.connect(str(path), timeout=10)
+    conn.execute("PRAGMA busy_timeout=10000")
     conn.executescript(_SCHEMA)
     return conn
 

@@ -17,23 +17,23 @@ from .probes.base import Verdict
 
 _CSI = "\033["
 
-# A verdict marker is a SHAPE-distinct glyph + a short word, so the three read
-# apart even with weak/no color (colorblind-safe). ✓ check, ✗ cross, ? question
-# are unmistakable shapes. Colored, each is bright + bold; with color off we fall
-# back to plain bracket labels. All markers pad to one width so they stack.
+# A verdict marker is a glyph + a short word. Color carries OK vs FAIL (same dot
+# shape), and the word label carries it when color is off (colorblind/NO_COLOR);
+# UNSURE uses a distinct hazard-triangle shape. Colored, each is bright + bold;
+# with color off we fall back to plain bracket labels. Markers pad to one width.
 _MARKERS = {
-    Verdict.OK: ("✓", "OK", "[OK]", "green_b"),
-    Verdict.FAIL: ("✗", "FAIL", "[FAIL]", "red_b"),
-    Verdict.UNVERIFIABLE: ("?", "UNSURE", "[??]", "amber_b"),
+    Verdict.OK: ("●", "OK", "[OK]", "green_b"),
+    Verdict.FAIL: ("●", "FAIL", "[FAIL]", "red_b"),
+    Verdict.UNVERIFIABLE: ("▲", "UNSURE", "[??]", "amber_b"),
 }
-_MARKER_WIDTH = 8  # visible width; "? UNSURE" is the widest
+_MARKER_WIDTH = 8  # visible width; "▲ UNSURE" is the widest
 
 # String-keyed view for callers that only have the verdict name.
 _VERDICT_BY_NAME = {v.value: v for v in Verdict}
 
 
 def _marker(p: Palette, verdict: Verdict) -> str:
-    """A fixed-width verdict marker: bright bold "✓ OK" / "✗ FAIL" / "? UNSURE",
+    """A fixed-width verdict marker: bright bold "● OK" / "● FAIL" / "▲ UNSURE",
     or plain "[OK]" / "[FAIL]" / "[??]" with color off."""
     glyph, word, plain, paint = _MARKERS[verdict]
     if not p.on:
@@ -240,11 +240,11 @@ def render_audit(items: list[dict], *, color: bool | None = None) -> str:
     p = Palette(on)
 
     style = {
-        "DONE": (p.green_b, "✓"),
-        "UNSUBSTANTIATED": (p.amber_b, "⚠"),
-        "SKIPPED": (p.red_b, "✗"),
-        "UNVERIFIABLE": (p.amber_b, "?"),
-        "UNKNOWN": (p.amber_b, "·"),
+        "DONE": (p.green_b, "●"),
+        "UNSUBSTANTIATED": (p.amber_b, "▲"),
+        "SKIPPED": (p.red_b, "●"),
+        "UNVERIFIABLE": (p.amber_b, "▲"),
+        "UNKNOWN": (p.amber_b, "▲"),
     }
     gaps = sum(1 for i in items if i.get("status") != "DONE")
     if gaps:

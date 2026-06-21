@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# RedPen stress / fuzz harness. Runs from the repo root.
+#   ./redpen-stress              fuzzer (320 cases) + concurrency soak
+#   ./redpen-stress --cases 500  bigger fuzz run
+#   ./redpen-stress --soak-only  just the concurrency soak
+#   ./redpen-stress --live       also run real-agent eyeball mode (needs claude)
+cd "$(dirname "$0")"
+exec "${REDPEN_PY:-.venv/bin/python}" -m tests.stress "$@"

@@ -21,10 +21,10 @@ def _finding(verdict, subject="something", detail="because reasons"):
 def test_marker_colored_is_bright_bold_with_word():
     p = Palette(True)
     ok, fail, unsure = _marker(p, Verdict.OK), _marker(p, Verdict.FAIL), _marker(p, Verdict.UNVERIFIABLE)
-    assert "✓ OK" in ok and "1;92" in ok          # bright green, bold
-    assert "✗ FAIL" in fail and "1;91" in fail      # bright red, bold
-    assert "? UNSURE" in unsure and "1;93" in unsure  # bright amber, bold
-    # three different colors AND three different glyph shapes
+    assert "● OK" in ok and "1;92" in ok            # bright-green dot, bold
+    assert "● FAIL" in fail and "1;91" in fail        # bright-red dot, bold
+    assert "▲ UNSURE" in unsure and "1;93" in unsure  # bright-amber triangle, bold
+    # OK/FAIL share the dot shape but differ by color + word; UNSURE differs in shape
     assert ok != fail != unsure
 
 
@@ -51,7 +51,7 @@ def test_report_no_color_uses_bracket_labels_and_no_ansi():
 
 def test_report_color_emits_bright_bold_markers():
     out = render_report([_finding(Verdict.OK)], show_art=False, color=True)
-    assert "\x1b[1;92m" in out and "✓ OK" in out
+    assert "\x1b[1;92m" in out and "● OK" in out
 
 
 # --- humanized headlines for every state ------------------------------------
