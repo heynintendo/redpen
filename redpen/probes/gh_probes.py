@@ -19,18 +19,18 @@ def pr_status(ctx: ProbeContext, **_: object) -> ProbeResult:
     rc, out, _ = run(["git", "rev-parse", "--is-inside-work-tree"], cwd=ctx.cwd)
     if not (rc == 0 and out.strip() == "true"):
         # A PR requires a git repository -> claiming one here is a contradiction.
-        return fail("pr_status", "claimed a PR, but this is not a git repository", git=False)
+        return fail("pr_status", "you claimed a PR, but this folder is not a git repository", git=False)
 
     if shutil.which("gh") is None:
         return unverifiable(
             "pr_status",
-            "gh CLI not installed -- install GitHub CLI to verify PR claims",
+            "the gh CLI isn't installed, so I can't check for a PR (install GitHub CLI)",
             hint="https://cli.github.com",
         )
 
     rc, _, _ = run(["gh", "auth", "status"], cwd=ctx.cwd)
     if rc != 0:
-        return unverifiable("pr_status", "gh is not authenticated -- run `gh auth login`")
+        return unverifiable("pr_status", "gh isn't logged in, so I can't check for a PR — run `gh auth login`")
 
     rc, out, err = run(
         ["gh", "pr", "view", "--json", "state,number,title,url"], cwd=ctx.cwd
@@ -38,20 +38,20 @@ def pr_status(ctx: ProbeContext, **_: object) -> ProbeResult:
     if rc != 0:
         return unverifiable(
             "pr_status",
-            "no pull request found for the current branch",
+            "I couldn't find a pull request for this branch",
             detail_err=err.strip()[:160],
         )
 
     try:
         data = json.loads(out)
     except json.JSONDecodeError:
-        return unverifiable("pr_status", "could not parse gh output")
+        return unverifiable("pr_status", "couldn't read gh's response")
 
     state = data.get("state", "UNKNOWN")
     number = data.get("number")
     return ok(
         "pr_status",
-        f"PR #{number} exists ({state})",
+        f"found PR #{number} ({state.lower()})",
         number=number,
         state=state,
         url=data.get("url"),

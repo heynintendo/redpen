@@ -35,9 +35,9 @@ def test_transcript_override_end_to_end(monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert "sample_session.jsonl" in out  # the source is surfaced
-    assert "README.md present" in out  # exists in the repo -> OK
+    assert "README.md is there" in out  # exists in the repo -> OK
     assert "config.py does not exist" in out  # absent at repo root -> FAIL (real evidence)
-    assert "pytest" in out and "ran clean" in out  # green run read from the transcript
+    assert "pytest" in out and "ran and passed" in out  # green run read from the transcript
     assert rc == 1  # exactly one real FAIL (config.py)
 
 

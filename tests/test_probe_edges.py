@@ -66,7 +66,7 @@ def test_tests_pass_never_run_this_session_is_unverifiable(tmp_path):
     proj = _pytest_project(tmp_path)
     res = rp.tests_pass(ProbeContext(cwd=proj, transcript=Transcript(tool_events=[])))
     assert res.verdict is Verdict.UNVERIFIABLE
-    assert "not run" in res.detail.lower()
+    assert "wasn't run" in res.detail.lower()
 
 
 def test_tests_pass_run_failure_is_fail(tmp_path, monkeypatch):

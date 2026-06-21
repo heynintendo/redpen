@@ -11,4 +11,4 @@ def unmapped(ctx: ProbeContext, **_: object) -> ProbeResult:
     Surfaced (never dropped) so the user sees there's an assertion RedPen can't
     check. Absent evidence -> UNVERIFIABLE, never FAIL.
     """
-    return unverifiable("unmapped", "no probe for this claim -- verify manually")
+    return unverifiable("unmapped", "no probe covers this claim — you'll have to check it yourself")

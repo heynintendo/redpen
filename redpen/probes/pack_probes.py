@@ -92,7 +92,7 @@ def _lockfile_has(cwd: Path, name: str) -> bool:
 def dep_present(ctx: ProbeContext, name: str | None = None, **_: object) -> ProbeResult:
     """A claimed dependency must be in BOTH the manifest and the lockfile."""
     if not name:
-        return unverifiable("dep_present", "no dependency name to verify")
+        return unverifiable("dep_present", "no dependency name to check")
     cwd = Path(ctx.cwd)
     in_manifest = _norm(name) in _manifest_deps(cwd)
     in_lock = _lockfile_has(cwd, name)
@@ -100,10 +100,10 @@ def dep_present(ctx: ProbeContext, name: str | None = None, **_: object) -> Prob
     if in_manifest and in_lock:
         return ok("dep_present", f"{name} is in both the manifest and the lockfile", **ev)
     if not in_manifest and not in_lock:
-        return fail("dep_present", f"{name} is in neither the manifest nor the lockfile", **ev)
+        return fail("dep_present", f"{name} isn't in the manifest or the lockfile", **ev)
     if in_manifest and not in_lock:
-        return unverifiable("dep_present", f"{name} is in the manifest but not the lockfile (not installed?)", **ev)
-    return unverifiable("dep_present", f"{name} is in the lockfile but not declared in the manifest", **ev)
+        return unverifiable("dep_present", f"{name} is declared in the manifest but isn't in the lockfile — looks like it wasn't installed", **ev)
+    return unverifiable("dep_present", f"{name} is in the lockfile but isn't declared in the manifest", **ev)
 
 
 # --- typecheck_clean --------------------------------------------------------
@@ -128,17 +128,17 @@ def typecheck_clean(ctx: ProbeContext, **_: object) -> ProbeResult:
     """Verify a configured type checker ran clean -- from the transcript only."""
     tool = _typechecker(Path(ctx.cwd))
     if tool is None:
-        return unverifiable("typecheck_clean", "no type checker (mypy/pyright/tsc) configured")
+        return unverifiable("typecheck_clean", "no type checker (mypy/pyright/tsc) is set up here")
     ev = _find_run_in_transcript(ctx, [tool, "mypy", "pyright", "tsc", "typecheck", "type-check"])
     if ev is None:
-        return unverifiable("typecheck_clean", f"{tool} was not run this session -- pass --run to execute it", tool=tool)
+        return unverifiable("typecheck_clean", f"{tool} wasn't run this session, so I can't confirm the types are clean", tool=tool)
     out = ev.output or ""
     if _TYPECHECK_BAD.search(out) or ev.failed:
         line = next((ln for ln in out.splitlines() if _TYPECHECK_BAD.search(ln)), f"{tool} reported errors")
-        return fail("typecheck_clean", f"{tool} reported type errors this session: {line[:60]}", tool=tool, contradiction=line[:200])
+        return fail("typecheck_clean", f"{tool} reported type errors this session — {line[:60]}", tool=tool, contradiction=line[:200])
     if _TYPECHECK_OK.search(out):
         return ok("typecheck_clean", f"{tool} ran clean this session", tool=tool)
-    return unverifiable("typecheck_clean", f"{tool} ran but its result is unclear from the output", tool=tool)
+    return unverifiable("typecheck_clean", f"{tool} ran, but its output doesn't clearly say pass or fail", tool=tool)
 
 
 # --- test_count -------------------------------------------------------------
@@ -162,19 +162,19 @@ def _parse_pass_count(text: str) -> int | None:
 def test_count(ctx: ProbeContext, n: int | None = None, **_: object) -> ProbeResult:
     """For "all N tests pass": verify the count from the test run in the transcript."""
     if n is None:
-        return unverifiable("test_count", "no test count to verify")
+        return unverifiable("test_count", "no test count to check")
     ev = _find_run_in_transcript(ctx, ["pytest", "test", "jest", "vitest", "cargo test", "go test"])
     if ev is None:
-        return unverifiable("test_count", f"no test run found this session to confirm {n} passing", claimed=n)
+        return unverifiable("test_count", f"no test run this session, so I can't confirm {n} passing", claimed=n)
     # A real failure in the output contradicts "all N pass" outright.
     if find_failures([ev], "tests"):
-        return fail("test_count", f"claimed all {n} tests pass, but the test run shows failures", claimed=n)
+        return fail("test_count", f"you said all {n} tests pass, but the test run has failures", claimed=n)
     actual = _parse_pass_count(ev.output or "")
     if actual is None:
-        return unverifiable("test_count", f"couldn't read a pass count from the test run (claimed {n})", claimed=n)
+        return unverifiable("test_count", f"couldn't read a pass count from the test run (you said {n})", claimed=n)
     if actual == n:
-        return ok("test_count", f"{n} tests passed, as claimed", claimed=n, actual=actual)
-    return fail("test_count", f"claimed {n} tests pass, but the run shows {actual} passed", claimed=n, actual=actual)
+        return ok("test_count", f"{n} tests passed, just as you said", claimed=n, actual=actual)
+    return fail("test_count", f"you said {n} tests pass, but the run shows {actual}", claimed=n, actual=actual)
 
 
 # --- symbol_exists ----------------------------------------------------------
@@ -197,10 +197,10 @@ def _defines_symbol(text: str, sym: str) -> bool:
 def symbol_exists(ctx: ProbeContext, symbol: str | None = None, **_: object) -> ProbeResult:
     """For "added function/class/endpoint X": grep the session changed-set files."""
     if not symbol:
-        return unverifiable("symbol_exists", "no symbol name to verify")
+        return unverifiable("symbol_exists", "no symbol name to check")
     cs = ctx.changed_set
     if cs is None or not cs.paths:
-        return unverifiable("symbol_exists", f"no changed files known this session to look for `{symbol}`", symbol=symbol)
+        return unverifiable("symbol_exists", f"no files changed this session to look for `{symbol}` in", symbol=symbol)
 
     hits: list[str] = []
     scanned = 0
@@ -212,11 +212,11 @@ def symbol_exists(ctx: ProbeContext, symbol: str | None = None, **_: object) -> 
         if _defines_symbol(_read(p), symbol):
             hits.append(abspath)
     if hits:
-        return ok("symbol_exists", f"`{symbol}` found in {len(hits)} file(s) changed this session", symbol=symbol, files=hits[:10])
+        return ok("symbol_exists", f"found `{symbol}` in {len(hits)} file(s) you changed this session", symbol=symbol, files=hits[:10])
     # Precision-safe: not finding it in our captured changed-set isn't proof it
     # wasn't added (the change-set can be incomplete) -> UNVERIFIABLE, not FAIL.
     return unverifiable(
         "symbol_exists",
-        f"`{symbol}` not found in the {scanned} source file(s) changed this session",
+        f"didn't find `{symbol}` in the {scanned} file(s) you changed this session (it may be elsewhere)",
         symbol=symbol, scanned=scanned,
     )

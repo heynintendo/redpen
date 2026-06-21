@@ -29,7 +29,7 @@ def file_present(ctx: ProbeContext, path: str | None = None, created: bool = Fal
     false-OK). Degrades to a plain existence check when no changed-set is known.
     """
     if not path:
-        return unverifiable("file_present", "no path supplied to verify")
+        return unverifiable("file_present", "no file path to check")
 
     p = ctx.resolve(path)
 
@@ -38,7 +38,7 @@ def file_present(ctx: ProbeContext, path: str | None = None, created: bool = Fal
     if p.is_symlink() and not p.exists():
         return unverifiable(
             "file_present",
-            f"{path} is a symlink with a missing target",
+            f"{path} is a symlink pointing at something that isn't there",
             exists=True, symlink=True, target_exists=False, path=str(p),
         )
 
@@ -52,7 +52,7 @@ def file_present(ctx: ProbeContext, path: str | None = None, created: bool = Fal
         if not provenance:
             return unverifiable(
                 "file_present",
-                f"{path} exists but there's no evidence the agent created/modified it this session",
+                f"{path} is there, but nothing shows the agent created or changed it this session",
                 exists=True, touched_this_session=False, path=str(p),
             )
 
@@ -61,12 +61,12 @@ def file_present(ctx: ProbeContext, path: str | None = None, created: bool = Fal
         if entries:
             return ok(
                 "file_present",
-                f"{path} exists (directory, {len(entries)} entries)",
+                f"{path} is there — a directory with {len(entries)} item(s)",
                 exists=True, is_dir=True, entries=len(entries),
             )
         return unverifiable(
             "file_present",
-            f"{path} exists but is an empty directory",
+            f"{path} is there, but it's an empty directory",
             exists=True, is_dir=True, entries=0,
         )
 
@@ -76,7 +76,7 @@ def file_present(ctx: ProbeContext, path: str | None = None, created: bool = Fal
     if size == 0:
         return unverifiable(
             "file_present",
-            f"{path} exists but is empty (0 bytes)",
+            f"{path} is there, but it's empty (0 bytes)",
             exists=True, size=0, mtime=mtime, symlink=is_link,
         )
 
@@ -88,7 +88,7 @@ def file_present(ctx: ProbeContext, path: str | None = None, created: bool = Fal
         if text is not None and text.strip() == "":
             return unverifiable(
                 "file_present",
-                f"{path} exists but contains only whitespace",
+                f"{path} is there, but it's only whitespace",
                 exists=True, size=size, mtime=mtime,
             )
 
@@ -96,7 +96,7 @@ def file_present(ctx: ProbeContext, path: str | None = None, created: bool = Fal
     if created and ctx.changed_set is not None:
         ev["touched_this_session"] = True
         ev["provenance"] = sorted(ctx.changed_set.provenance(ctx.cwd, path))
-    return ok("file_present", f"{path} present ({size} bytes)", **ev)
+    return ok("file_present", f"{path} is there ({size} bytes)", **ev)
 
 
 def todos_remaining(ctx: ProbeContext, **_: object) -> ProbeResult:
@@ -110,7 +110,7 @@ def todos_remaining(ctx: ProbeContext, **_: object) -> ProbeResult:
     if ctx.transcript is None or not ctx.transcript.touched_files:
         return unverifiable(
             "todos_remaining",
-            "no touched files known from the transcript",
+            "no files were edited this session, so there's nothing to scan for stubs",
             touched_files=[],
         )
 
@@ -133,9 +133,10 @@ def todos_remaining(ctx: ProbeContext, **_: object) -> ProbeResult:
                 todos.append(f"{rel}:{i}")
 
     if stubs:
+        plural = "stub" if len(stubs) == 1 else "stubs"
         return fail(
             "todos_remaining",
-            f"{len(stubs)} unimplemented stub(s) in touched files",
+            f"{len(stubs)} unfinished {plural} (raise NotImplementedError) left in files you edited",
             stubs=stubs[:20],
             todos=todos[:20],
             scanned=scanned,
@@ -143,10 +144,10 @@ def todos_remaining(ctx: ProbeContext, **_: object) -> ProbeResult:
     if todos:
         return unverifiable(
             "todos_remaining",
-            f"{len(todos)} TODO/FIXME marker(s) in touched files (review manually)",
+            f"{len(todos)} TODO/FIXME marker(s) in files you edited — worth a look",
             todos=todos[:20],
             scanned=scanned,
         )
     if not scanned:
-        return unverifiable("todos_remaining", "touched files no longer present to scan")
-    return ok("todos_remaining", f"no stubs or TODO markers in {len(scanned)} touched file(s)", scanned=scanned)
+        return unverifiable("todos_remaining", "the files that were edited aren't there anymore to scan")
+    return ok("todos_remaining", f"no stubs or TODO markers in the {len(scanned)} file(s) you edited", scanned=scanned)

@@ -89,6 +89,23 @@ def is_non_claim(sentence: str) -> bool:
     """True if the sentence asserts nothing-was-done / session state, not a claim."""
     return bool(NON_CLAIM_RE.search(sentence))
 
+
+# Descriptive enumeration -- a bare path, or "path/ — description" / "path: desc"
+# (directory listings, the agent narrating what files exist). These are NOT
+# completion claims. A real claim starts with a verb ("Created config.py"), so a
+# line that STARTS with a path token is a listing, not an assertion.
+_PATH_TOKEN = r"[`'\"]?(?:[\w@.\-]+(?:[/.][\w@.\-]+)+/?|[\w@.\-]+/)[`'\"]?"
+_LISTING_RE = re.compile(
+    rf"^\s*{_PATH_TOKEN}\s*$"                      # a path on its own line
+    rf"|^\s*{_PATH_TOKEN}\s*(?:[—–:]|-)\s+\S",     # "path — desc" / "path: desc" / "path - desc"
+    re.IGNORECASE,
+)
+
+
+def is_listing(sentence: str) -> bool:
+    """True if the line is a path listing / 'path — description', not a claim."""
+    return bool(_LISTING_RE.match(sentence))
+
 # An assertive accomplishment sentence ("I refactored the parser") even when it
 # names nothing a probe can check. Used by the catch-all so such a claim becomes
 # a labelled UNVERIFIABLE line instead of being silently dropped.

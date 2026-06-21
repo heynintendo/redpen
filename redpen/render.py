@@ -17,7 +17,30 @@ from .probes.base import Verdict
 
 _CSI = "\033["
 
-_SYMBOL = {Verdict.OK: "✓", Verdict.FAIL: "✗", Verdict.UNVERIFIABLE: "⚠"}
+# A verdict marker is a SHAPE-distinct glyph + a short word, so the three read
+# apart even with weak/no color (colorblind-safe). ✓ check, ✗ cross, ? question
+# are unmistakable shapes. Colored, each is bright + bold; with color off we fall
+# back to plain bracket labels. All markers pad to one width so they stack.
+_MARKERS = {
+    Verdict.OK: ("✓", "OK", "[OK]", "green_b"),
+    Verdict.FAIL: ("✗", "FAIL", "[FAIL]", "red_b"),
+    Verdict.UNVERIFIABLE: ("?", "UNSURE", "[??]", "amber_b"),
+}
+_MARKER_WIDTH = 8  # visible width; "? UNSURE" is the widest
+
+# String-keyed view for callers that only have the verdict name.
+_VERDICT_BY_NAME = {v.value: v for v in Verdict}
+
+
+def _marker(p: Palette, verdict: Verdict) -> str:
+    """A fixed-width verdict marker: bright bold "✓ OK" / "✗ FAIL" / "? UNSURE",
+    or plain "[OK]" / "[FAIL]" / "[??]" with color off."""
+    glyph, word, plain, paint = _MARKERS[verdict]
+    if not p.on:
+        return plain.ljust(_MARKER_WIDTH)
+    text = f"{glyph} {word}"
+    pad = " " * max(0, _MARKER_WIDTH - len(text))  # uncolored padding aligns columns
+    return getattr(p, paint)(text) + pad
 
 
 def _supports_color(stream) -> bool:
@@ -54,6 +77,17 @@ class Palette:
 
     def bold_red(self, s):
         return self._w("1;31", s)
+
+    # Bright + bold, standard ANSI (90-series) so verdict markers render
+    # distinctly on every terminal, not just truecolor ones.
+    def green_b(self, s):
+        return self._w("1;92", s)
+
+    def red_b(self, s):
+        return self._w("1;91", s)
+
+    def amber_b(self, s):
+        return self._w("1;93", s)
 
 
 def _truncate(s: str, n: int) -> str:
@@ -103,36 +137,33 @@ def render_header(show_art: bool = True, color: bool | None = None) -> str:
     return block or ""
 
 
-def _symbol(p: Palette, verdict: Verdict) -> str:
-    sym = _SYMBOL[verdict]
-    return {
-        Verdict.OK: p.green,
-        Verdict.FAIL: p.red,
-        Verdict.UNVERIFIABLE: p.yellow,
-    }[verdict](sym)
-
-
 def _headline(p: Palette, counts: dict) -> str:
     ok, fail, unv = counts[Verdict.OK], counts[Verdict.FAIL], counts[Verdict.UNVERIFIABLE]
     if fail:
-        noun = "claim doesn't" if fail == 1 else "claims don't"
-        return p.bold(f"Marked. {fail} {noun} hold up:")
+        if fail == 1:
+            return p.bold("Marked. One claim doesn't hold up:")
+        if ok == 0 and unv == 0:
+            return p.bold(f"Marked. None of these {fail} hold up:")
+        return p.bold(f"Marked. {fail} of these claims don't hold up:")
     if unv and ok:
-        plural = "thing" if unv == 1 else "things"
-        return p.bold(f"Marked. Checks out, but {unv} {plural} I can't confirm.")
+        thing = "one thing" if unv == 1 else f"{unv} things"
+        return p.bold(f"Marked. The rest holds up, but there's {thing} I can't confirm.")
     if unv and not ok:
-        return p.bold("Couldn't confirm a thing. Evidence absent, not contradicted.")
+        return p.bold(
+            "Can't confirm any of these. There's nothing in the session that proves "
+            "them either way — not wrong, just unverified."
+        )
     return p.bold("Marked. Everything checks out. Don't get used to it.")
 
 
 def _footer(p: Palette, counts: dict, elapsed: float | None) -> str:
     ok, fail, unv = counts[Verdict.OK], counts[Verdict.FAIL], counts[Verdict.UNVERIFIABLE]
     parts = " · ".join(
-        [p.green(f"{ok} OK"), p.red(f"{fail} FAIL"), p.yellow(f"{unv} UNVERIFIABLE")]
+        [p.green_b(f"{ok} OK"), p.red_b(f"{fail} FAIL"), p.amber_b(f"{unv} unsure")]
     )
     foot = "  " + parts
     if elapsed is not None:
-        foot += p.dim(f"        ({elapsed:.1f}s)")
+        foot += p.dim(f"   ({elapsed:.1f}s)")
     return foot
 
 
@@ -156,16 +187,16 @@ def render_report(
     out.append(_headline(p, counts))
     out.append("")
 
-    width = min(max((len(f.display) for f in findings), default=12), 44)
+    width = min(max((len(f.display) for f in findings), default=12), 40)
     for i, f in enumerate(findings, start=1):
-        sym = _symbol(p, f.result.verdict)
-        subject = _truncate(f.display, 44).ljust(width)
+        marker = _marker(p, f.result.verdict)
+        subject = _truncate(f.display, 40).ljust(width)
         evidence = p.dim(_truncate(f.result.detail, 60))
-        out.append(f"  {p.dim(f'{i:>2}.')} {sym}  {subject}  {evidence}")
+        out.append(f"  {p.dim(f'{i:>2}.')} {marker}  {subject}  {evidence}")
 
     out.append("")
     out.append(_footer(p, counts, elapsed))
-    out.append(p.dim("  redpen explain <n>  for the evidence behind any line"))
+    out.append(p.dim("  run `redpen explain <n>` to see the evidence behind any line"))
     return "\n".join(out)
 
 
@@ -176,9 +207,9 @@ def render_explain(record: dict, *, color: bool | None = None) -> str:
     on = _supports_color(sys.stdout) if color is None else color
     p = Palette(on)
     verdict = record.get("verdict", "UNVERIFIABLE")
-    sym = {"OK": p.green("✓"), "FAIL": p.red("✗")}.get(verdict, p.yellow("⚠"))
+    marker = _marker(p, _VERDICT_BY_NAME.get(verdict, Verdict.UNVERIFIABLE)).rstrip()
 
-    out = [p.bold(f"{TOOL_NAME} — verdict #{record.get('n', '?')}: {sym} {verdict}"), ""]
+    out = [p.bold(f"{TOOL_NAME} — verdict #{record.get('n', '?')}: {marker}"), ""]
     out.append(f"  {p.dim('claim:  ')} {record.get('claim', '')}")
     out.append(f"  {p.dim('subject:')} {record.get('subject', '')}")
     out.append(f"  {p.dim('probe:  ')} {record.get('probe', '')}")
@@ -209,11 +240,11 @@ def render_audit(items: list[dict], *, color: bool | None = None) -> str:
     p = Palette(on)
 
     style = {
-        "DONE": (p.green, "✓"),
-        "UNSUBSTANTIATED": (p.yellow, "⚠"),
-        "SKIPPED": (p.red, "✗"),
-        "UNVERIFIABLE": (p.yellow, "⚠"),
-        "UNKNOWN": (p.yellow, "·"),
+        "DONE": (p.green_b, "✓"),
+        "UNSUBSTANTIATED": (p.amber_b, "⚠"),
+        "SKIPPED": (p.red_b, "✗"),
+        "UNVERIFIABLE": (p.amber_b, "?"),
+        "UNKNOWN": (p.amber_b, "·"),
     }
     gaps = sum(1 for i in items if i.get("status") != "DONE")
     if gaps:
@@ -238,7 +269,7 @@ def render_audit(items: list[dict], *, color: bool | None = None) -> str:
     out.append(
         "  "
         + " · ".join(
-            [p.green(f"{done} done"), p.yellow(f"{unsub} unsubstantiated"), p.red(f"{skip} skipped")]
+            [p.green_b(f"{done} done"), p.amber_b(f"{unsub} unsubstantiated"), p.red_b(f"{skip} skipped")]
         )
     )
     return "\n".join(out)
@@ -248,16 +279,13 @@ def render_history(rows: list[HistoryRow], *, color: bool | None = None) -> str:
     on = _supports_color(sys.stdout) if color is None else color
     p = Palette(on)
     if not rows:
-        return p.dim("No history yet. Run `redpen check` to start the ledger.")
+        return p.dim("Nothing in the ledger yet — run `redpen check` to start recording verdicts.")
 
-    color_for = {"OK": p.green, "FAIL": p.red, "UNVERIFIABLE": p.yellow}
-    sym_for = {"OK": "✓", "FAIL": "✗", "UNVERIFIABLE": "⚠"}
     out = [p.bold(f"{TOOL_NAME} ledger — most recent first:"), ""]
     for r in rows:
-        paint = color_for.get(r.verdict, p.yellow)
-        sym = paint(sym_for.get(r.verdict, "·"))
+        marker = _marker(p, _VERDICT_BY_NAME.get(r.verdict, Verdict.UNVERIFIABLE))
         ts = p.dim(r.ts.replace("T", " ").replace("+00:00", "Z"))
         subject = _truncate(r.claim, 40).ljust(40)
         detail = p.dim(_truncate(r.detail or "", 40))
-        out.append(f"  {sym} {ts}  {subject}  {detail}")
+        out.append(f"  {marker} {ts}  {subject}  {detail}")
     return "\n".join(out)

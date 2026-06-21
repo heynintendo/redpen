@@ -130,19 +130,19 @@ def _execute_run(ctx, probe, cmd, display):
     # Could-not-run is absent evidence, never a contradiction. A missing
     # executable or a timeout is UNVERIFIABLE, not FAIL -- don't cry wolf.
     if rc == RC_NOT_FOUND:
-        return unverifiable(probe, f"could not run `{display}` (executable not found)", command=display)
+        return unverifiable(probe, f"couldn't run `{display}` — it isn't installed", command=display)
     if rc == RC_TIMEOUT:
-        return unverifiable(probe, f"`{display}` timed out before finishing", command=display, exit_code=RC_TIMEOUT)
+        return unverifiable(probe, f"`{display}` timed out before it finished", command=display, exit_code=RC_TIMEOUT)
     # pytest exit 5 == "no tests were collected". Nothing ran -> UNVERIFIABLE.
     if display == "pytest" and rc == 5:
-        return unverifiable(probe, "no tests were collected (pytest exit 5)", command=display, exit_code=5)
+        return unverifiable(probe, "pytest didn't collect any tests, so there's nothing to confirm", command=display, exit_code=5)
     tail = (err or out).strip().splitlines()[-1:] or [""]
     if rc == 0:
-        return ok(probe, f"`{display}` exited 0 (re-run)", command=display, exit_code=0, ran=True)
-    return fail(probe, f"`{display}` exited {rc} (re-run)", command=display, exit_code=rc, ran=True, tail=tail[0][:200])
+        return ok(probe, f"`{display}` passed when I re-ran it", command=display, exit_code=0, ran=True)
+    return fail(probe, f"`{display}` failed when I re-ran it (exit {rc})", command=display, exit_code=rc, ran=True, tail=tail[0][:200])
 
 
-def _run_gated(ctx, probe, detect, transcript_keywords, *, kind=None, multi_runner=None):
+def _run_gated(ctx, probe, detect, transcript_keywords, *, kind=None, multi_runner=None, noun="it"):
     """Transcript-primary verification (default), --run as an explicit last resort.
 
     Order on the default path: an incontestable contradiction in the agent's own
@@ -165,7 +165,7 @@ def _run_gated(ctx, probe, detect, transcript_keywords, *, kind=None, multi_runn
             f0 = fails[0]
             return fail(
                 probe,
-                f"{kind} failed this session: {f0.line[:60]}",
+                f"the {kind} failed this session — {f0.line[:60]}",
                 command=(f0.command or display or kind)[:200],
                 contradiction=f0.line,
                 source="transcript-output",
@@ -177,7 +177,7 @@ def _run_gated(ctx, probe, detect, transcript_keywords, *, kind=None, multi_runn
         if len(runners) > 1:
             return unverifiable(
                 probe,
-                f"multiple runners present ({', '.join(runners)}); ambiguous which the claim means",
+                f"there's more than one runner here ({', '.join(runners)}), so I can't tell which one '{noun}' means",
                 runners_detected=runners,
             )
 
@@ -187,14 +187,14 @@ def _run_gated(ctx, probe, detect, transcript_keywords, *, kind=None, multi_runn
         label = display or (ev.command or ev.label)
         if ev.failed:
             return fail(probe, f"`{label}` failed this session", command=label, ran=True, source="transcript")
-        return ok(probe, f"`{label}` ran clean this session", command=label, ran=True, source="transcript")
+        return ok(probe, f"`{label}` ran and passed this session", command=label, ran=True, source="transcript")
 
     # 4) nothing ran this session.
     if detected is None:
-        return unverifiable(probe, "not run this session, and no runner is configured here", ran=False)
+        return unverifiable(probe, f"nothing ran this session and there's no runner here, so I can't confirm {noun}", ran=False)
     return unverifiable(
         probe,
-        f"`{display}` was not run this session -- pass --run to re-execute (flaky, side-effecting)",
+        f"`{display}` wasn't run this session, so I can't confirm {noun} — pass --run to run it (slow, side-effecting)",
         command=display,
         ran=False,
     )
@@ -229,7 +229,7 @@ def tests_pass(ctx: ProbeContext, **_: object) -> ProbeResult:
     res = _run_gated(
         ctx, "tests_pass", detect_test_command,
         ["pytest", "npm test", "npm run test", "cargo test", "go test", "make test"],
-        kind="tests", multi_runner=_present_test_runners,
+        kind="tests", multi_runner=_present_test_runners, noun="the tests pass",
     )
     # Surface multi-runner ambiguity on the --run path too (the gate only does
     # it on the transcript path).
@@ -243,9 +243,12 @@ def tests_pass(ctx: ProbeContext, **_: object) -> ProbeResult:
 def build_ok(ctx: ProbeContext, **_: object) -> ProbeResult:
     return _run_gated(
         ctx, "build_ok", detect_build_command,
-        ["npm run build", "make build", "cargo build", "go build"], kind="build",
+        ["npm run build", "make build", "cargo build", "go build"], kind="build", noun="the build works",
     )
 
 
 def lint_clean(ctx: ProbeContext, **_: object) -> ProbeResult:
-    return _run_gated(ctx, "lint_clean", detect_lint_command, ["ruff", "flake8", "npm run lint", "eslint"])
+    return _run_gated(
+        ctx, "lint_clean", detect_lint_command, ["ruff", "flake8", "npm run lint", "eslint"],
+        noun="the linter is clean",
+    )

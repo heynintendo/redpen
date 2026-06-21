@@ -69,8 +69,9 @@ def _split_sentences(text: str) -> list[str]:
 
 def _specs_for_sentence(s: str) -> list[ProbeSpec]:
     # Skip non-claims ("nothing to report", "generated zero files", "didn't ...")
-    # so they never produce filler UNVERIFIABLE lines.
-    if patterns.is_non_claim(s):
+    # and descriptive path listings ("redpen/cli.py — the CLI") so neither
+    # produces filler verdict lines. Only actual "I did X" assertions count.
+    if patterns.is_non_claim(s) or patterns.is_listing(s):
         return []
 
     specs: list[ProbeSpec] = []

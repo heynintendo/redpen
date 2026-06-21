@@ -44,23 +44,22 @@ def git_pushed(ctx: ProbeContext, **_: object) -> ProbeResult:
     """
     if not _is_git_repo(ctx):
         # Reached only for an explicit "pushed" claim (the generic-suite git
-        # probes are dropped in a non-git folder). You can't push from a folder
-        # that isn't a repo -> the claim is contradicted.
-        return fail("git_pushed", "claimed a push, but this is not a git repository", git=False)
+        # probes are dropped in a non-git folder).
+        return fail("git_pushed", "you claimed a push, but this folder is not a git repository", git=False)
 
     op = _in_progress_op(ctx)
     if op:
-        return unverifiable("git_pushed", f"{op} in progress; repository state is mid-flight", operation=op)
+        return unverifiable("git_pushed", f"a {op} is in progress, so the repo is mid-change — I can't tell if it's pushed", operation=op)
 
     # Unborn branch / zero commits -> nothing to have pushed.
     rc, _, _ = run(["git", "rev-parse", "--verify", "-q", "HEAD"], cwd=ctx.cwd)
     if rc != 0:
-        return unverifiable("git_pushed", "no commits yet (unborn branch)")
+        return unverifiable("git_pushed", "there are no commits yet, so nothing could have been pushed")
 
     # Detached HEAD -> not on a branch, so no upstream to compare.
     rc_sym, _, _ = run(["git", "symbolic-ref", "-q", "HEAD"], cwd=ctx.cwd)
     if rc_sym != 0:
-        return unverifiable("git_pushed", "detached HEAD; not on a branch to compare")
+        return unverifiable("git_pushed", "HEAD is detached (not on a branch), so there's no upstream to compare against")
 
     rc, upstream, _ = run(
         ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], cwd=ctx.cwd
@@ -68,27 +67,28 @@ def git_pushed(ctx: ProbeContext, **_: object) -> ProbeResult:
     if rc != 0:
         _, remotes, _ = run(["git", "remote"], cwd=ctx.cwd)
         if not remotes.strip():
-            return unverifiable("git_pushed", "no remote configured (nothing to push to)", upstream=None)
+            return unverifiable("git_pushed", "no remote is set up, so there's nowhere to push", upstream=None)
         return unverifiable(
             "git_pushed",
-            "no upstream branch configured (nothing to compare against)",
+            "this branch has no upstream set, so I can't tell whether it's been pushed",
             upstream=None,
         )
     upstream = upstream.strip()
 
     rc, count, _ = run(["git", "rev-list", "--count", "@{u}..HEAD"], cwd=ctx.cwd)
     if rc != 0:
-        return unverifiable("git_pushed", "could not compute unpushed commits", upstream=upstream)
+        return unverifiable("git_pushed", "couldn't work out how many commits are unpushed", upstream=upstream)
 
     ahead = int(count.strip() or "0")
     if ahead == 0:
-        return ok("git_pushed", f"no unpushed commits (level with {upstream})", ahead=0, upstream=upstream)
+        return ok("git_pushed", f"nothing left to push — you're level with {upstream}", ahead=0, upstream=upstream)
 
     _, log, _ = run(["git", "log", "--oneline", "-n", "10", "@{u}..HEAD"], cwd=ctx.cwd)
     commits = [ln for ln in log.splitlines() if ln.strip()]
+    plural = "commit hasn't" if ahead == 1 else "commits haven't"
     return fail(
         "git_pushed",
-        f"{ahead} unpushed commit(s) on this branch",
+        f"{ahead} {plural} been pushed yet",
         ahead=ahead,
         upstream=upstream,
         commits=commits,
@@ -103,15 +103,15 @@ def git_clean(ctx: ProbeContext, **_: object) -> ProbeResult:
     "clean / committed everything" claim, so FAIL with the breakdown.
     """
     if not _is_git_repo(ctx):
-        return fail("git_clean", "claimed a commit, but this is not a git repository", git=False)
+        return fail("git_clean", "you claimed a commit, but this folder is not a git repository", git=False)
 
     rc, out, _ = run(["git", "status", "--porcelain"], cwd=ctx.cwd)
     if rc != 0:
-        return unverifiable("git_clean", "could not read git status")
+        return unverifiable("git_clean", "couldn't read git status")
 
     lines = [ln for ln in out.splitlines() if ln.strip()]
     if not lines:
-        return ok("git_clean", "working tree is clean", staged=0, modified=0, untracked=0)
+        return ok("git_clean", "nothing uncommitted — the working tree is clean", staged=0, modified=0, untracked=0)
 
     staged = modified = untracked = 0
     files: list[str] = []
@@ -135,7 +135,7 @@ def git_clean(ctx: ProbeContext, **_: object) -> ProbeResult:
         parts.append(f"{untracked} untracked")
     return fail(
         "git_clean",
-        f"{len(lines)} uncommitted change(s): {', '.join(parts)}",
+        f"{len(lines)} change(s) aren't committed yet: {', '.join(parts)}",
         staged=staged,
         modified=modified,
         untracked=untracked,
@@ -151,38 +151,38 @@ def branch_synced(ctx: ProbeContext, **_: object) -> ProbeResult:
     not contradict the claim.
     """
     if not _is_git_repo(ctx):
-        return fail("branch_synced", "claimed branch sync, but this is not a git repository", git=False)
+        return fail("branch_synced", "you claimed the branch is synced, but this folder is not a git repository", git=False)
 
     rc, upstream, _ = run(["git", "rev-parse", "--abbrev-ref", "@{u}"], cwd=ctx.cwd)
     if rc != 0:
-        return unverifiable("branch_synced", "no upstream tracking branch configured")
+        return unverifiable("branch_synced", "this branch has no upstream, so there's nothing to sync against")
     upstream = upstream.strip()
     if "/" not in upstream:
-        return unverifiable("branch_synced", f"cannot parse upstream ref: {upstream}")
+        return unverifiable("branch_synced", f"couldn't make sense of the upstream ref ({upstream})")
     remote, rbranch = upstream.split("/", 1)
 
     rc, local, _ = run(["git", "rev-parse", "HEAD"], cwd=ctx.cwd)
     if rc != 0:
-        return unverifiable("branch_synced", "could not resolve local HEAD")
+        return unverifiable("branch_synced", "couldn't resolve the local HEAD commit")
     local_sha = local.strip()
 
     rc, out, err = run(["git", "ls-remote", remote, rbranch], cwd=ctx.cwd)
     if rc != 0:
         return unverifiable(
             "branch_synced",
-            "could not reach remote to compare",
+            "couldn't reach the remote to compare",
             remote=remote,
             error=err.strip()[:200],
         )
     if not out.strip():
-        return unverifiable("branch_synced", f"remote has no branch {rbranch}", remote=remote)
+        return unverifiable("branch_synced", f"the remote has no {rbranch} branch to compare against", remote=remote)
 
     remote_sha = out.split()[0]
     if remote_sha == local_sha:
-        return ok("branch_synced", f"local matches {upstream}", local=local_sha[:12], remote=remote_sha[:12])
+        return ok("branch_synced", f"in sync — local matches {upstream}", local=local_sha[:12], remote=remote_sha[:12])
     return fail(
         "branch_synced",
-        f"local HEAD differs from {upstream}",
+        f"local and {upstream} point at different commits",
         local=local_sha[:12],
         remote=remote_sha[:12],
     )

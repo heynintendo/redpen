@@ -16,7 +16,7 @@ def custom_rule(ctx: ProbeContext, rule: dict | None = None, **_: object) -> Pro
     is UNVERIFIABLE, never FAIL.
     """
     if not rule:
-        return unverifiable("custom_rule", "no rule supplied")
+        return unverifiable("custom_rule", "no rule to run")
     r = Rule(
         claim_pattern=rule.get("claim_pattern", ""),
         command=rule.get("command", ""),
@@ -31,13 +31,13 @@ def custom_rule(ctx: ProbeContext, rule: dict | None = None, **_: object) -> Pro
     if not (r.safe or ctx.run):
         return unverifiable(
             "custom_rule",
-            f"custom rule runs `{r.command[:50]}`; mark it `safe: true` or pass --run to execute",
+            f"this rule runs `{r.command[:50]}` — mark it `safe: true` or pass --run to run it",
             rule=label, command=r.command, gated=True,
         )
 
     rc, output = run_rule(r, ctx.cwd)
     if rc in (124, 127):
-        return unverifiable("custom_rule", f"could not evaluate rule: {output[:60]}", rule=label, command=r.command)
+        return unverifiable("custom_rule", f"couldn't run the rule: {output[:60]}", rule=label, command=r.command)
 
     # Default expectation if the rule specified none: a clean exit.
     expect_exit = r.expect_exit if (r.expect_exit is not None or r.expect_output is not None) else 0
@@ -52,10 +52,10 @@ def custom_rule(ctx: ProbeContext, rule: dict | None = None, **_: object) -> Pro
     ev = {"rule": label, "command": r.command, "exit_code": rc,
           "expect_exit": expect_exit, "expect_output": r.expect_output}
     if exit_ok and out_ok:
-        return ok("custom_rule", f"rule satisfied: `{r.command[:50]}`", **ev)
+        return ok("custom_rule", f"rule passed: `{r.command[:50]}`", **ev)
     why = []
     if not exit_ok:
         why.append(f"exit {rc} != expected {expect_exit}")
     if not out_ok:
         why.append(f"expected output {'/'.join([str(r.expect_output)])!s} not found")
-    return fail("custom_rule", f"rule not satisfied: {'; '.join(why)}", **ev)
+    return fail("custom_rule", f"rule failed: {'; '.join(why)}", **ev)

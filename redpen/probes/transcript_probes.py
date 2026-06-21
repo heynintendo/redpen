@@ -22,13 +22,13 @@ def contradiction_scan(ctx: ProbeContext, kind: str = "any", **_: object) -> Pro
     """
     t = ctx.transcript
     if t is None:
-        return unverifiable("contradiction_scan", "no session transcript available")
+        return unverifiable("contradiction_scan", "no session transcript to scan")
 
     failures = find_failures(t.tool_events, kind)
     if not failures:
         return ok(
             "contradiction_scan",
-            f"no failure signatures across {len(t.tool_events)} tool result(s)",
+            f"nothing in the {len(t.tool_events)} command result(s) looks like a failure",
             contradictions=[],
             total=len(t.tool_events),
         )
@@ -39,7 +39,7 @@ def contradiction_scan(ctx: ProbeContext, kind: str = "any", **_: object) -> Pro
         worst = failures[-1]
         return fail(
             "contradiction_scan",
-            f"agent claimed success but its own output shows failure: {worst.line[:70]}",
+            f"the agent called it done, but its own output shows a failure: {worst.line[:60]}",
             contradiction=worst.line,
             command=worst.command[:200],
             contradictions=quotes,
@@ -47,7 +47,7 @@ def contradiction_scan(ctx: ProbeContext, kind: str = "any", **_: object) -> Pro
 
     return unverifiable(
         "contradiction_scan",
-        f"{len(failures)} failure signature(s) in tool output, but no success was narrated over them",
+        f"{len(failures)} command(s) failed this session, though nothing was claimed as done over them",
         contradictions=quotes,
     )
 

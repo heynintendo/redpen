@@ -108,9 +108,9 @@ def cmd_check(args: argparse.Namespace) -> int:
             print(header)
             print()
         if transcript is None and not args.question:
-            print(p.dim(f"No Claude Code transcript found for {cwd}. Nothing to grade."))
+            print(p.dim("Nothing to grade — I couldn't find a Claude Code session for this folder."))
         else:
-            print(p.dim("No completion claims found. Nothing to grade."))
+            print(p.dim("Nothing to grade — the session didn't actually claim to finish anything I can check."))
         return 0
 
     # Build the session changed-set once (transcript + git delta vs baseline)

@@ -148,7 +148,7 @@ def test_cli_non_git_created_file_resolves_ok(tmp_path, monkeypatch, capsys):
 
     rc = main(["check", "--transcript", str(tpath), "--no-art", "--no-color"])
     out = capsys.readouterr().out
-    assert "app.py present" in out          # resolved OK via transcript, no git
+    assert "app.py is there" in out          # resolved OK via transcript, no git
     assert "1 OK" in out and "FAIL" in out  # footer present
     assert "not a git repository" not in out  # no git noise
     assert rc == 0
