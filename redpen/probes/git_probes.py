@@ -105,6 +105,14 @@ def git_clean(ctx: ProbeContext, **_: object) -> ProbeResult:
     if not _is_git_repo(ctx):
         return fail("git_clean", "you claimed a commit, but this folder is not a git repository", git=False)
 
+    # A rebase/merge/cherry-pick/revert in progress is a transient state: the
+    # tree is mid-operation (unmerged paths are expected), so "committed
+    # everything / clean" can't be judged -> UNVERIFIABLE, never FAIL. Mirrors
+    # git_pushed, which already bails on in-progress operations.
+    op = _in_progress_op(ctx)
+    if op:
+        return unverifiable("git_clean", f"a {op} is in progress, so the tree is mid-change — I can't tell if it's clean", operation=op)
+
     rc, out, _ = run(["git", "status", "--porcelain"], cwd=ctx.cwd)
     if rc != 0:
         return unverifiable("git_clean", "couldn't read git status")

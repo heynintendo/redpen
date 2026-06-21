@@ -123,3 +123,26 @@ def test_pass_then_fail_still_caught():
 def test_zero_failed_summary_is_not_a_failure():
     ev = _ev(output="=== 5 passed, 0 failed in 0.2s ===", failed=False)
     assert find_failures([ev], "tests") == []
+
+
+def test_subshell_wrapped_display_command_output_is_not_scanned():
+    # A display command inside a subshell / group still merely prints a file;
+    # a failure signature in its output is content, not a failure.
+    for cmd in ("(cat error.log)", "{ cat error.log; }", "  ( cat err.log )"):
+        ev = _ev(output="Traceback (most recent call last):\nValueError: boom",
+                 failed=False, command=cmd, label=cmd)
+        assert find_failures([ev], "any") == [], cmd
+
+
+def test_masked_go_test_failure_is_caught():
+    # `go test` exits 0 (masked) but prints a FAIL line -> still a contradiction.
+    ev = _ev(output="--- FAIL: TestX (0.00s)\nFAIL", failed=False,
+             command="go test ./...", label="go test ./...")
+    fails = find_failures([ev], "tests")
+    assert fails and "FAIL" in fails[0].line
+
+
+def test_zero_failing_summary_still_not_a_failure():
+    # The new go/jest ^FAIL sig must not fire on a clean summary.
+    ev = _ev(output="ok  pkg  0.01s\nPASS\n5 passed", failed=False)
+    assert find_failures([ev], "tests") == []

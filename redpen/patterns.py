@@ -153,10 +153,14 @@ _LISTING_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A markdown table row ("| file | created |") is structured/status data, not an
+# "I did X" assertion -- so a verb inside a cell is not a completion claim.
+_TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
+
 
 def is_listing(sentence: str) -> bool:
-    """True if the line is a path listing / 'path — description', not a claim."""
-    return bool(_LISTING_RE.match(sentence))
+    """True if the line is a path listing / 'path — description' / a table row."""
+    return bool(_LISTING_RE.match(sentence) or _TABLE_ROW_RE.match(sentence))
 
 # An assertive accomplishment sentence ("I refactored the parser") even when it
 # names nothing a probe can check. Used by the catch-all so such a claim becomes

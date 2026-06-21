@@ -38,6 +38,8 @@ _TEST_SIGNATURES = [
     re.compile(r"(?i)\b[1-9]\d* (?:tests? )?failing\b"),  # mocha/jest "3 failing" (not "0 failing")
     re.compile(r"(?mi)^Tests:.*\b[1-9]\d* failed"),   # jest summary line
     re.compile(r"\btest result: FAILED\b"),           # cargo test
+    re.compile(r"(?m)^--- FAIL[: ]"),                 # go test per-test failure
+    re.compile(r"(?m)^FAIL\b"),                       # go test summary / jest "FAIL <suite>"
 ]
 _BUILD_SIGNATURES = [
     re.compile(r"\bBUILD FAILED\b"),
@@ -67,7 +69,10 @@ _DISPLAY_CMDS = frozenset(
 
 
 def _is_display_command(cmd: str) -> bool:
-    parts = cmd.strip().split()
+    # Peel leading subshell / group openers so `(cat x)` and `{ cat x; }` are
+    # still recognized as display commands.
+    s = cmd.strip().lstrip("(){} \t")
+    parts = s.split()
     if not parts:
         return False
     return parts[0].rsplit("/", 1)[-1] in _DISPLAY_CMDS

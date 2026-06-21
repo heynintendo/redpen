@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from redpen.probes import git_clean
 from redpen.probes.base import ProbeContext, Verdict
 
@@ -96,3 +98,25 @@ def test_agent_left_its_own_file_uncommitted_is_fail(git_repo, commit):
 
     assert res.verdict is Verdict.FAIL  # the agent's own work, left uncommitted
     assert "app.py" in res.evidence.get("agent_files", [])
+
+
+def test_in_progress_merge_is_unverifiable(git_repo, commit, git):
+    # A mid-merge conflict is a transient state; "committed everything / clean"
+    # cannot be judged -> UNVERIFIABLE, never FAIL.
+    commit(git_repo, name="conflict.txt", content="base\n")
+    git("checkout", "-b", "feature", cwd=git_repo)
+    (git_repo / "conflict.txt").write_text("feature side\n")
+    git("add", "-A", cwd=git_repo)
+    git("-c", "commit.gpgsign=false", "commit", "-m", "feature", cwd=git_repo)
+    git("checkout", "main", cwd=git_repo)
+    (git_repo / "conflict.txt").write_text("main side\n")
+    git("add", "-A", cwd=git_repo)
+    git("-c", "commit.gpgsign=false", "commit", "-m", "main", cwd=git_repo)
+    import subprocess
+    with pytest.raises(subprocess.CalledProcessError):  # conflicting merge exits non-zero
+        git("merge", "feature", cwd=git_repo)  # leaves MERGE_HEAD + an unmerged path
+
+    res = git_clean(ProbeContext(cwd=git_repo))
+
+    assert res.verdict is Verdict.UNVERIFIABLE
+    assert res.evidence.get("operation") == "merge"

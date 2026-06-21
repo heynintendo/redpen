@@ -74,3 +74,14 @@ def test_created_comma_list_extracts_all_paths():
     assert created_paths("Created a/one.py, b/two.py, and c/three.py.") == [
         "a/one.py", "b/two.py", "c/three.py",
     ]
+
+
+def test_markdown_table_row_is_not_a_claim():
+    # A status table row is structured data, not an "I did X" assertion.
+    assert extract_claims("| file | status |\n| z.py | created |\n| q.py | deleted |") == []
+
+
+def test_prose_with_a_pipe_is_still_a_claim():
+    # A normal sentence that merely contains a pipe is not a table row.
+    names = _probes("I created src/app.py | the new entrypoint")
+    assert "file_present" in names

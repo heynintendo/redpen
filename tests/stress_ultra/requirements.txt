@@ -1,0 +1,10 @@
+# Extra dependencies for the tests/stress_ultra adversarial suite.
+#
+# Installed into the project venv on demand; intentionally kept OUT of
+# pyproject.toml so this suite stays fully isolated from the main package and
+# from tests/stress and tests/stress_hard (which may be edited concurrently).
+#
+#   .venv/bin/python -m pip install -r tests/stress_ultra/requirements.txt
+hypothesis>=6.0
+pytest-xdist>=3.0
+pytest>=8.0
