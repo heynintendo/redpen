@@ -76,48 +76,53 @@ def _specs_for_sentence(s: str) -> list[ProbeSpec]:
 
     specs: list[ProbeSpec] = []
 
-    for m in patterns.FILE_RE.finditer(s):
-        path = m.group("path")
+    # File paths: matched on the original sentence (the regex handles quoted
+    # paths) and list-aware -- "Created X and Y" yields both X and Y.
+    for path in patterns.created_paths(s):
         # These come from create/write/add verbs, so they are creation claims:
         # require the file to be in the session changed-set, not merely to exist.
         specs.append(ProbeSpec("file_present", {"path": path, "created": True}, label=f"wrote {path}"))
 
-    if patterns.PUSH_RE.search(s):
+    # Action triggers run against a quote-stripped copy, so a verb the agent is
+    # quoting or mocking ("'just push it'") is read as a mention, not a claim.
+    sa = patterns.strip_quoted(s)
+
+    if patterns.PUSH_RE.search(sa):
         specs.append(ProbeSpec("git_pushed"))
-    if patterns.COMMIT_RE.search(s):
+    if patterns.COMMIT_RE.search(sa):
         specs.append(ProbeSpec("git_clean"))
-    if patterns.mentions_tests_passing(s):
+    if patterns.mentions_tests_passing(sa):
         specs.append(ProbeSpec("tests_pass"))
-    if patterns.BUILD_RE.search(s):
+    if patterns.BUILD_RE.search(sa):
         specs.append(ProbeSpec("build_ok"))
-    if patterns.LINT_RE.search(s):
+    if patterns.LINT_RE.search(sa):
         specs.append(ProbeSpec("lint_clean"))
-    if patterns.PR_RE.search(s):
+    if patterns.PR_RE.search(sa):
         specs.append(ProbeSpec("pr_status"))
-    if patterns.BRANCH_SYNC_RE.search(s):
+    if patterns.BRANCH_SYNC_RE.search(sa):
         specs.append(ProbeSpec("branch_synced"))
 
     # probe-pack: dependency / type-check / test-count / symbol claims
-    m = patterns.TEST_COUNT_RE.search(s)
+    m = patterns.TEST_COUNT_RE.search(sa)
     if m:
         specs.append(ProbeSpec("test_count", {"n": int(m.group(1))}, label=f"all {m.group(1)} tests pass"))
-    if patterns.TYPECHECK_RE.search(s):
+    if patterns.TYPECHECK_RE.search(sa):
         specs.append(ProbeSpec("typecheck_clean"))
-    dep = patterns.extract_dep(s)
+    dep = patterns.extract_dep(sa)
     if dep:
         specs.append(ProbeSpec("dep_present", {"name": dep}, label=f"added dependency {dep}"))
-    sym = patterns.extract_symbol(s)
+    sym = patterns.extract_symbol(sa)
     if sym:
         specs.append(ProbeSpec("symbol_exists", {"symbol": sym}, label=f"added {sym}"))
 
     # A generic "done/ready" claim pulls in the whole default suite.
-    if patterns.DONE_RE.search(s):
+    if patterns.DONE_RE.search(sa):
         for spec in default_suite():
             specs.append(spec)
 
     # Catch-all: an accomplishment claim with nothing a probe can check still
     # gets surfaced as a labelled UNVERIFIABLE line, never silently dropped.
-    if not specs and len(s) <= 200 and patterns.CLAIM_LIKE_RE.search(s):
+    if not specs and len(s) <= 200 and patterns.CLAIM_LIKE_RE.search(sa):
         specs.append(ProbeSpec("unmapped", label=s[:80]))
 
     return _dedupe(specs)
@@ -164,8 +169,18 @@ def _dedupe_across_claims(claims: list[Claim]) -> list[Claim]:
     return out
 
 
+_CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
+
+
+def _strip_code_fences(text: str) -> str:
+    """Drop fenced code blocks: trigger words/commands inside ``` ``` are example
+    code, not claims (a `# tests pass` comment or a `git push` recipe)."""
+    return _CODE_FENCE_RE.sub(" ", text)
+
+
 def extract_claims(text: str, source: str = "transcript") -> list[Claim]:
     """Map a block of text to a list of (claim, probes)."""
+    text = _strip_code_fences(text)
     claims: list[Claim] = []
     for sentence in _split_sentences(text):
         specs = _specs_for_sentence(sentence)
@@ -176,12 +191,14 @@ def extract_claims(text: str, source: str = "transcript") -> list[Claim]:
         return _dedupe_across_claims(claims)
 
     # Nothing specific matched. Text that clearly narrates completion runs the
-    # full default suite; an ad-hoc question we can't map becomes an honest
-    # UNVERIFIABLE line rather than a guess or a silent drop.
+    # full default suite -- UNLESS it's negating completion ("not done yet, still
+    # uncommitted, haven't pushed"), which is not a claim and grades nothing. An
+    # ad-hoc question we can't map becomes an honest UNVERIFIABLE line.
     label = (text.strip() or "completion")[:120]
-    if patterns.DONE_RE.search(text) or patterns.narrates_success(text):
+    narrates = patterns.DONE_RE.search(text) or patterns.narrates_success(text)
+    if narrates and not patterns.is_non_claim(text):
         return [Claim(text=label, probe_specs=default_suite(), source=source)]
-    if source == "adhoc":
+    if source == "adhoc" and not patterns.is_non_claim(text):
         return [Claim(text=label, probe_specs=[ProbeSpec("unmapped", label=label[:80])], source=source)]
     return []
 

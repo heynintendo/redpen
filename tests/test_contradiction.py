@@ -79,3 +79,47 @@ def test_tests_pass_fails_on_transcript_output(tmp_path):
     res = rp.tests_pass(ProbeContext(cwd=tmp_path, transcript=t))
     assert res.verdict is Verdict.FAIL
     assert "2 failed" in res.evidence.get("contradiction", "")
+
+
+# --- precision: only real, relevant, final-state failures count -------------
+
+
+def test_benign_nonzero_exit_is_not_a_failure():
+    # grep no-match / `test -f` / `git diff --quiet` exit non-zero by design.
+    for cmd in ("grep -r TODO src", "test -f optional.cfg", "git diff --quiet", "./scripts/scan.sh"):
+        ev = _ev(output="", failed=True, command=cmd, label=cmd)
+        assert find_failures([ev], "any") == [], cmd
+
+
+def test_failure_signature_in_benign_output_is_not_a_failure():
+    # A Traceback/FAILED/error-TS printed by cat/echo is content, not a failure.
+    for cmd, out in (
+        ("cat error.log", "Traceback (most recent call last):\nValueError: boom"),
+        ("echo 'FAILED means the precheck did not run'", "FAILED means the precheck did not run"),
+        ("cat docs/ts_errors.md", "error TS2304 means a missing name"),
+    ):
+        ev = _ev(output=out, failed=False, command=cmd, label=cmd)
+        assert find_failures([ev], "any") == [], cmd
+        assert find_failures([ev], "build") == [], cmd
+
+
+def test_last_run_wins_fail_then_pass_is_not_a_failure():
+    events = [
+        _ev(output="=== 1 failed, 4 passed in 0.3s ===", failed=True),   # early run
+        _ev(output="5 passed in 0.2s", failed=False),                    # re-run, green
+    ]
+    assert find_failures(events, "tests") == []
+
+
+def test_pass_then_fail_still_caught():
+    events = [
+        _ev(output="5 passed in 0.2s", failed=False),
+        _ev(output="=== 1 failed in 0.2s ===", failed=True),  # last run failed
+    ]
+    fails = find_failures(events, "tests")
+    assert fails and "1 failed" in fails[0].line
+
+
+def test_zero_failed_summary_is_not_a_failure():
+    ev = _ev(output="=== 5 passed, 0 failed in 0.2s ===", failed=False)
+    assert find_failures([ev], "tests") == []

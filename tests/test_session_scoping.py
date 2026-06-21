@@ -84,3 +84,17 @@ def test_build_changed_set_merges_transcript_and_git(tmp_path):
     assert cs.contains(tmp_path, "untracked.py")       # git signal
     assert cs.contains(tmp_path, "from_transcript.py")  # transcript signal
     assert "git" in cs.provenance(tmp_path, "untracked.py")
+
+
+def test_git_only_change_cannot_attribute_authorship(tmp_path):
+    # Another concurrent session changed the file: it shows up in the git/fs
+    # delta but NOT as this session's transcript edit. Authorship is then
+    # UNVERIFIABLE, never OK -- the cross-session false-OK guard.
+    (tmp_path / "shared.py").write_text("v1\nedited by another session\n")
+    cs = ChangedSet(is_git=True)
+    cs.paths[normalize(tmp_path, "shared.py")] = {"git"}  # no "transcript" provenance
+
+    res = file_present(ProbeContext(cwd=tmp_path, changed_set=cs), path="shared.py", created=True)
+
+    assert res.verdict is Verdict.UNVERIFIABLE
+    assert res.evidence.get("touched_this_session") is False

@@ -115,16 +115,48 @@ def git_clean(ctx: ProbeContext, **_: object) -> ProbeResult:
 
     staged = modified = untracked = 0
     files: list[str] = []
+    agent_files: list[str] = []
+    cs = ctx.changed_set
     for ln in lines:
         x, y = ln[0], ln[1]
-        files.append(ln[3:])
-        if x == "?" and y == "?":
+        rel = ln[3:]
+        files.append(rel)
+        # A rename shows as "old -> new"; attribute on the new path.
+        attr_path = rel.split(" -> ")[-1] if " -> " in rel else rel
+        is_untracked = x == "?" and y == "?"
+        is_staged = not is_untracked and x not in (" ", "?")
+        has_transcript = cs is not None and "transcript" in cs.provenance(ctx.cwd, attr_path)
+        # A dirty file is the session's own uncommitted work -- and so a real
+        # contradiction of "committed everything" -- when it's a NEW untracked
+        # file, a STAGED change, or a tracked file THIS session's transcript
+        # edited. A tracked file that was only modified in the worktree with no
+        # transcript record is the one TOCTOU shape: it may be a user's edit
+        # after the agent finished, so it isn't attributable to the agent.
+        if is_untracked or is_staged or has_transcript:
+            agent_files.append(attr_path)
+        if is_untracked:
             untracked += 1
         else:
             if x not in (" ", "?"):
                 staged += 1
             if y not in (" ", "?"):
                 modified += 1
+
+    # Attribution / TOCTOU guard: when we have a changed-set and every dirty file
+    # is a worktree-only edit to a tracked file the agent never touched, the
+    # dirtiness isn't the agent's -- it's a post-finish user edit or another
+    # session -- so it's UNVERIFIABLE, not FAIL.
+    if cs is not None and not agent_files:
+        return unverifiable(
+            "git_clean",
+            f"the tree has {len(lines)} uncommitted change(s), but none were made by this "
+            "session — looks like edits after the agent finished, not the agent's to answer for",
+            staged=staged,
+            modified=modified,
+            untracked=untracked,
+            files=files[:20],
+            agent_attributable=False,
+        )
 
     parts = []
     if staged:
@@ -140,6 +172,7 @@ def git_clean(ctx: ProbeContext, **_: object) -> ProbeResult:
         modified=modified,
         untracked=untracked,
         files=files[:20],
+        agent_files=agent_files[:20],
     )
 
 

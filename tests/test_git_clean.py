@@ -62,3 +62,37 @@ def test_committed_claim_in_non_git_folder_is_fail(tmp_path):
     res = git_clean(ProbeContext(cwd=tmp_path))
     assert res.verdict is Verdict.FAIL
     assert "not a git repository" in res.detail
+
+
+# --- attribution / TOCTOU: only the agent's own uncommitted edits are a FAIL --
+
+from redpen.changeset import ChangedSet, normalize  # noqa: E402
+
+
+def _changed_set(cwd, prov=None):
+    cs = ChangedSet(is_git=True)
+    for rel, tags in (prov or {}).items():
+        cs.paths[normalize(cwd, rel)] = set(tags)
+    return cs
+
+
+def test_post_finish_user_edit_is_unverifiable_not_fail(git_repo, commit):
+    commit(git_repo, name="app.py", content="v1")
+    (git_repo / "app.py").write_text("v1\nuser edit after the agent finished\n")
+    cs = _changed_set(git_repo)  # this session's transcript touched nothing
+
+    res = git_clean(ProbeContext(cwd=git_repo, changed_set=cs))
+
+    assert res.verdict is Verdict.UNVERIFIABLE  # not the agent's edit -> never FAIL
+    assert res.evidence.get("agent_attributable") is False
+
+
+def test_agent_left_its_own_file_uncommitted_is_fail(git_repo, commit):
+    commit(git_repo, name="app.py", content="v1")
+    (git_repo / "app.py").write_text("v1\nagent left this uncommitted\n")
+    cs = _changed_set(git_repo, {"app.py": {"transcript"}})  # the agent edited app.py
+
+    res = git_clean(ProbeContext(cwd=git_repo, changed_set=cs))
+
+    assert res.verdict is Verdict.FAIL  # the agent's own work, left uncommitted
+    assert "app.py" in res.evidence.get("agent_files", [])

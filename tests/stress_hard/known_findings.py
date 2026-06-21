@@ -12,27 +12,15 @@ report headlines: false_FAIL, false_OK, misparse.
 from __future__ import annotations
 
 KNOWN_DIVERGENCES = {
-    # --- false FAIL: the contradiction engine cries wolf -------------------
-    "contradiction/benign_grep_nomatch": ("false_FAIL", "benign-nonzero-exit"),
-    "contradiction/benign_diff": ("false_FAIL", "benign-nonzero-exit"),
-    "contradiction/benign_test_builtin": ("false_FAIL", "benign-nonzero-exit"),
-    "contradiction/benign_tool_exit3": ("false_FAIL", "benign-nonzero-exit"),
-    "contradiction/sig_in_cat_traceback": ("false_FAIL", "signature-in-benign-output"),
-    "contradiction/sig_in_echo_failed": ("false_FAIL", "signature-in-benign-output"),
-    "contradiction/build_sig_in_cat": ("false_FAIL", "signature-in-benign-output"),
-    "contradiction/zero_failed_summary": ("false_FAIL", "zero-failed-regex"),
-    "contradiction/fail_then_pass_rerun": ("false_FAIL", "not-last-run-aware"),
-    "contradiction/fail_then_pass_build": ("false_FAIL", "not-last-run-aware"),
-    # --- false FAIL: attribution / narration ------------------------------
-    "attribution/toctou_git_clean_baseline_0": ("false_FAIL", "git_clean-no-attribution"),
-    "attribution/toctou_git_clean_baseline_1": ("false_FAIL", "git_clean-no-attribution"),
-    "claim_extraction/negation_not_done_dirty": ("false_FAIL", "negation-blind-narration"),
-    # --- false OK ---------------------------------------------------------
-    "attribution/other_session_edit": ("false_OK", "cross-session-git-attribution"),
-    # --- misparse ---------------------------------------------------------
-    "claim_extraction/sarcasm_not_done": ("misparse", "extracts-from-quote"),
-    "claim_extraction/code_block_comment": ("misparse", "extracts-from-code-fence"),
-    "claim_extraction/code_block_push": ("misparse", "extracts-from-code-fence"),
-    "claim_extraction/created_x_and_y": ("misparse", "conjunction-misses-second-path"),
+    # The six root causes that produced 15 false-FAILs and 1 false-OK are fixed
+    # (redpen/contradiction.py, git_probes.git_clean, file_probes.file_present,
+    # patterns.py, claims.py). What remains is a single fail-safe miss:
+    #
+    # split_chitchat_final -- a real claim lives only in a non-final assistant
+    # turn while the final message is pure chit-chat. RedPen scopes to the final
+    # turn and MISSES the claim (emits no finding). This fails safe: a miss, never
+    # a confident wrong verdict. Eagerly looking back would resurrect a creation
+    # claim for an absent file and emit a confident FAIL -- trading a safe miss
+    # for a false-FAIL -- so it's kept as a known miss instead.
     "claim_extraction/split_chitchat_final": ("misparse", "final-message-only-scoping"),
 }

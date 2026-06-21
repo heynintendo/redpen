@@ -45,15 +45,21 @@ def file_present(ctx: ProbeContext, path: str | None = None, created: bool = Fal
     if not p.exists():
         return fail("file_present", f"{path} does not exist", exists=False, path=str(p))
 
-    # Session-scoping: a "created/modified" claim needs evidence the agent
-    # actually touched this file this session, not just that it exists on disk.
+    # Session-scoping + authorship attribution: a "created/wrote X" claim needs
+    # THIS session's own transcript edit-record (a Write/Edit tool-use on the
+    # path). A git/filesystem delta is not per-session -- a file another
+    # concurrent session changed shows up there too -- so it can't attribute
+    # authorship. Without a transcript edit, the authorship claim is
+    # UNVERIFIABLE, never OK (the cross-session false-OK guard).
     if created and ctx.changed_set is not None:
-        provenance = sorted(ctx.changed_set.provenance(ctx.cwd, path))
-        if not provenance:
+        provenance = ctx.changed_set.provenance(ctx.cwd, path)
+        if "transcript" not in provenance:
             return unverifiable(
                 "file_present",
-                f"{path} is there, but nothing shows the agent created or changed it this session",
-                exists=True, touched_this_session=False, path=str(p),
+                f"{path} is there, but this session's transcript shows no edit to it — "
+                "I can't attribute the authorship to this session",
+                exists=True, touched_this_session=False,
+                provenance=sorted(provenance), path=str(p),
             )
 
     if p.is_dir():

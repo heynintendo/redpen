@@ -1,4 +1,4 @@
-_generated 2026-06-21T07:27:47+00:00_
+_generated 2026-06-21T09:28:24+00:00_
 
 # RedPen stress report
 
@@ -15,7 +15,7 @@ _generated 2026-06-21T07:27:47+00:00_
 
 ## Latency (deterministic fast path)
 
-- p50 31 ms  ·  p90 69 ms  ·  p99 108 ms  ·  max 158 ms
+- p50 33 ms  ·  p90 77 ms  ·  p99 111 ms  ·  max 137 ms
 - sub-second p99: yes
 
 ## Broken cases

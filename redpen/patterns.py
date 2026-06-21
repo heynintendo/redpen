@@ -70,6 +70,58 @@ FILE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A continuation path in a conjunction: "Created X and Y" / "X, Y, and Z". The
+# verb only governs the first path, so further paths joined by and/comma/& would
+# otherwise be missed.
+_FILE_PATH = r"[\w./\-]+(?:/[\w.\-]+|\.[A-Za-z0-9]+)"
+_CONT_PATH_RE = re.compile(
+    r"\s*(?:,|,?\s*and|&)\s+[`'\"]?(?P<path>" + _FILE_PATH + r")[`'\"]?",
+    re.IGNORECASE,
+)
+
+
+def created_paths(sentence: str) -> list[str]:
+    """All paths in a creation claim, including ones after 'and'/',' in a list.
+
+    "Created src/x.py and src/y.py" -> ['src/x.py', 'src/y.py'].
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(p: str) -> None:
+        if p not in seen:
+            seen.add(p)
+            out.append(p)
+
+    for m in FILE_RE.finditer(sentence):
+        _add(m.group("path"))
+        pos = m.end()
+        while True:  # consume "and PATH" / ", PATH" continuations
+            cm = _CONT_PATH_RE.match(sentence, pos)
+            if not cm:
+                break
+            _add(cm.group("path"))
+            pos = cm.end()
+    return out
+
+
+# Quoting / mockery: text the agent puts in quotes (or backticks) is a *mention*,
+# not an assertion ("Yeah, because 'just push it' is ever that simple"). Strip
+# quoted spans before matching action triggers so a quoted verb isn't read as a
+# claim. The single-quote rule skips contraction apostrophes (haven't, it's) by
+# requiring the quote not be glued to letters on either side.
+_QUOTED_RE = re.compile(
+    r"\"[^\"]*\""
+    r"|`[^`]*`"
+    r"|(?<![A-Za-z])'[^']*'(?![A-Za-z])"
+)
+
+
+def strip_quoted(s: str) -> str:
+    """Blank out quoted spans (mentions/mockery) for action-trigger matching."""
+    return _QUOTED_RE.sub(" ", s)
+
+
 # Non-claims: a sentence asserting that NOTHING was done (or describing session
 # state) is not a completion claim and must not produce a verdict line. Kept
 # specific so it never swallows a real positive like "no type errors".
