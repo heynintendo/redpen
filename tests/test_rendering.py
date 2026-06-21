@@ -201,3 +201,73 @@ def test_real_creation_claim_survives_amid_a_listing():
     claims = extract_claims(text, source="transcript")
     names = {s.name for c in claims for s in c.probe_specs}
     assert names == {"file_present"}  # only the real "I created X" line counts
+
+
+# --- CC-capture fallback selection + forced-color safety --------------------
+
+
+def _clear_color_env(mp):
+    for v in ("NO_COLOR", "FORCE_COLOR", "CLICOLOR", "CLICOLOR_FORCE", "REDPEN_COLOR",
+              "COLORTERM", "TERM", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"):
+        mp.delenv(v, raising=False)
+
+
+def test_under_claude_code_detection(monkeypatch):
+    _clear_color_env(monkeypatch)
+    assert render._under_claude_code() is False
+    monkeypatch.setenv("CLAUDECODE", "1")
+    assert render._under_claude_code() is True
+
+
+def test_captured_under_cc_is_monochrome_by_default(monkeypatch):
+    # The /check path: captured (not a TTY), color-capable env, but NOT forced.
+    _clear_color_env(monkeypatch)
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("COLORTERM", "truecolor")
+    monkeypatch.setenv("TERM", "xterm-256color")
+    assert render._color_level(_NotTTY()) == 0  # safe monochrome, never risk garbage
+
+
+def test_captured_path_emits_no_escape_codes():
+    findings = [_finding(Verdict.OK), _finding(Verdict.FAIL), _finding(Verdict.UNVERIFIABLE)]
+    out = render_report(findings, show_art=True, color=False)  # the level-0 (captured) path
+    assert "\x1b" not in out  # not one raw escape -> never visible garbage in /check
+
+
+def test_captured_path_shows_the_polished_grader_mascot():
+    block = render._header_block(Palette(False), True, 0)
+    assert "\x1b" not in block
+    assert TOOL_NAME in block
+    # the grumpy heavy-lidded examiner (eyes + snout + pen), not the old placeholder
+    assert "●" in block and "▿" in block and "✎" in block
+    assert "( o o )" not in block
+
+
+def test_real_tty_truecolor_uses_pixel_art():
+    block = render._header_block(Palette(True), True, 3)
+    assert "38;2;" in block  # truecolor pixel mascot, not the ASCII fallback
+
+
+def test_color_can_be_forced_through_a_capture(monkeypatch):
+    _clear_color_env(monkeypatch)
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("COLORTERM", "truecolor")
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setenv("CLICOLOR_FORCE", "1")  # user opts in
+    assert render._color_level(_NotTTY()) == 3
+    # FORCE_COLOR level hints are honored too
+    monkeypatch.delenv("CLICOLOR_FORCE", raising=False)
+    monkeypatch.delenv("COLORTERM", raising=False)
+    monkeypatch.setenv("FORCE_COLOR", "2")
+    assert render._color_level(_NotTTY()) == 2
+
+
+def test_color_can_be_force_disabled_even_on_a_tty(monkeypatch):
+    _clear_color_env(monkeypatch)
+    monkeypatch.setenv("COLORTERM", "truecolor")
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setenv("REDPEN_COLOR", "never")
+    assert render._color_level(_TTY()) == 0
+    monkeypatch.delenv("REDPEN_COLOR", raising=False)
+    monkeypatch.setenv("CLICOLOR", "0")
+    assert render._color_level(_TTY()) == 0

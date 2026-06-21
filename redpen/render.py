@@ -37,29 +37,69 @@ _WORD = {Verdict.OK: "verified", Verdict.FAIL: "failed", Verdict.UNVERIFIABLE: "
 
 
 # --- terminal capability ----------------------------------------------------
+def _under_claude_code() -> bool:
+    """True when running inside a Claude Code session (the `/check` path)."""
+    return bool(os.environ.get("CLAUDECODE") or os.environ.get("CLAUDE_CODE_ENTRYPOINT"))
+
+
+def _color_disabled() -> bool:
+    """Color is hard-off: NO_COLOR (spec), CLICOLOR=0, or our own override."""
+    return bool(
+        os.environ.get("NO_COLOR")
+        or os.environ.get("CLICOLOR") == "0"
+        or os.environ.get("REDPEN_COLOR", "").lower() in ("never", "off", "0", "false", "no")
+    )
+
+
+def _color_forced() -> str | None:
+    """An explicit "emit color even without a TTY" opt-in, or None.
+
+    Returns the FORCE_COLOR level hint ("1"/"2"/"3"), "" for a bare force, or
+    None when color was not explicitly forced. Standard CLICOLOR_FORCE /
+    FORCE_COLOR semantics, plus REDPEN_COLOR=always.
+    """
+    if os.environ.get("REDPEN_COLOR", "").lower() in ("always", "force", "on", "1", "true", "yes"):
+        return ""
+    cf = os.environ.get("CLICOLOR_FORCE")
+    if cf and cf != "0":
+        return ""
+    fc = os.environ.get("FORCE_COLOR")
+    if fc and fc != "0":
+        return fc
+    return None
+
+
 def _color_level(stream) -> int:
     """Terminal color capability: 0 none · 1 16-color · 2 256-color · 3 truecolor.
 
-    Truecolor is used ONLY when COLORTERM actually advertises it, so 256-color
-    terminals (e.g. macOS Terminal.app) get a representation they can render
-    instead of silently-dropped 24-bit escapes.
+    SAFE DEFAULT: color is emitted only to a real TTY or when explicitly forced.
+    Inside a Claude Code `/check` session the output is captured (not a TTY), so
+    by default we emit clean monochrome -- never raw \\x1b[ escapes that a
+    consumer might show as literal garbage. A user who has confirmed their
+    terminal/UI renders ANSI cleanly opts in with CLICOLOR_FORCE=1 / FORCE_COLOR
+    (and can force-disable with NO_COLOR / CLICOLOR=0 / REDPEN_COLOR=never).
+
+    Truecolor is used ONLY when COLORTERM advertises it, so 256-color terminals
+    get a representation they can render instead of silently-dropped 24-bit codes.
     """
-    if os.environ.get("NO_COLOR"):
+    if _color_disabled():
         return 0
-    force = os.environ.get("FORCE_COLOR")
+    forced = _color_forced()
     isatty = bool(getattr(stream, "isatty", lambda: False)())
-    if not isatty and not force:
+    if not isatty and forced is None:
+        # Not a real TTY and not explicitly forced (includes the captured Claude
+        # Code path) -> safe, clean monochrome.
         return 0
     colorterm = os.environ.get("COLORTERM", "").lower()
-    if colorterm in ("truecolor", "24bit") or force == "3":
+    if colorterm in ("truecolor", "24bit") or forced == "3":
         return 3
     term = os.environ.get("TERM", "")
-    if "256color" in term or "256" in colorterm or force == "2":
+    if "256color" in term or "256" in colorterm or forced == "2":
         return 2
     if term and term != "dumb":
         return 1
-    # Color was forced but the terminal advertises nothing -> 256 renders widely.
-    return 2 if force else 0
+    # Forced color but the terminal advertises nothing -> 256 renders widely.
+    return 2 if forced is not None else 0
 
 
 def _supports_color(stream) -> bool:
@@ -145,11 +185,17 @@ def _read_art(name: str) -> str | None:
     return None
 
 
-# A small, clean ASCII mascot for 16-color / no-color terminals (last resort).
-_ASCII_MASCOT = r"""   .---.
-  ( o o )   {tool}
-   \ ^ /    grades what you claimed
-    '-'"""
+# A polished monochrome grader for 16-color / no-color and captured contexts
+# (the Claude Code /check path most users see): the same heavy-lidded, grumpy,
+# unimpressed examiner as the pixel mascot, designed to read as intentional in
+# plain text. Glyphs are common and render in any UTF-8 terminal/UI.
+_ASCII_MASCOT = (
+    "   .-‾‾‾‾‾-.\n"
+    "  / ▔     ▔ \\     {tool}\n"
+    " |  ●     ●  |    grades what you claimed —\n"
+    " |     ▿     |    and doubts every word\n"
+    "  \\_________/ ✎"
+)
 
 
 def load_mascot_art(level: int = 3) -> str | None:
