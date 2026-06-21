@@ -13,6 +13,7 @@ the codebase; the transcript is the single source of "what was claimed".
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -123,41 +124,88 @@ def _mentions_path(path: Path, needle: str) -> bool:
         return False
 
 
-def latest_transcript_for(cwd: Path | str, home: Path | None = None) -> Path | None:
-    """Most recently active real session ``*.jsonl`` relevant to ``cwd``, or None.
+def active_session_id() -> str | None:
+    """The id of the Claude Code session RedPen is running inside, if any.
 
-    Searches the cwd's own project dir AND every ancestor's (the session may have
-    been launched from a parent/launch directory). A transcript is accepted when
-    it lives in cwd's own project dir (launched from cwd) OR its content references
-    cwd (launched from an ancestor, worked here). The most recent accepted one
-    wins; an unrelated session is never silently picked. Headless `claude -p`
-    transcripts (entrypoint ``sdk-cli``) are skipped so RedPen never discovers its
-    own judge/decompose calls.
+    Claude Code exposes it as ``CLAUDE_CODE_SESSION_ID``; the session's transcript
+    file is named ``<id>.jsonl``. This is the authoritative way to grade the
+    CURRENT session rather than whichever transcript happens to be newest.
+    """
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CLAUDE_SESSION_ID")
+    return sid.strip() if sid and sid.strip() else None
+
+
+@dataclass
+class Discovery:
+    """The outcome of locating a session transcript to grade."""
+
+    path: Path | None = None
+    source: str = ""          # "session" | "own" | "reference" | ""
+    alternatives: int = 0     # other non-headless candidates that were considered
+
+    @property
+    def ambiguous(self) -> bool:
+        """A heuristic pick made while other candidates also existed -> we can't
+        be sure it's the current session."""
+        return self.source in ("own", "reference") and self.alternatives > 0
+
+
+def _candidate_project_dirs(cwd: Path | str, base: Path) -> tuple[list[Path], set[str]]:
+    own = {str(d) for d in _candidate_dirs(cwd, base)}
+    search = list(_candidate_dirs(cwd, base))
+    for ancestor in Path(cwd).resolve().parents:
+        search.extend(_candidate_dirs(ancestor, base))
+    dirs: list[Path] = []
+    seen: set[str] = set()
+    for d in search:
+        if d.is_dir() and str(d) not in seen:
+            seen.add(str(d))
+            dirs.append(d)
+    return dirs, own
+
+
+def discover_transcript(cwd: Path | str, home: Path | None = None,
+                        session_id: str | None = None) -> Discovery:
+    """Locate the transcript to grade for ``cwd``.
+
+    Order of preference:
+      1. The ACTIVE session: when ``CLAUDE_CODE_SESSION_ID`` names a ``<id>.jsonl``
+         in the cwd's own or any ancestor project dir, that IS the current session
+         -- authoritative, regardless of which file is newest.
+      2. Heuristic fallback (no session id, or its file isn't here): the most
+         recently active non-headless transcript that lives in cwd's own project
+         dir or whose content references cwd. ``Discovery.ambiguous`` flags when
+         this pick was made with other candidates present, so the caller can fail
+         safe instead of silently grading the wrong session.
     """
     base = transcript_base(home)
     cwd_resolved = str(Path(cwd).resolve())
+    dirs, own_dirs = _candidate_project_dirs(cwd, base)
 
-    own_dirs = {str(d) for d in _candidate_dirs(cwd, base)}
-    search_dirs: list[Path] = list(_candidate_dirs(cwd, base))
-    for ancestor in Path(cwd).resolve().parents:
-        search_dirs.extend(_candidate_dirs(ancestor, base))
+    sid = session_id if session_id is not None else active_session_id()
+    if sid:
+        for d in dirs:
+            cand = d / f"{sid}.jsonl"
+            if cand.is_file():
+                return Discovery(path=cand, source="session")
 
     candidates: list[Path] = []
-    seen: set[str] = set()
-    for d in search_dirs:
-        if d.is_dir() and str(d) not in seen:
-            seen.add(str(d))
-            candidates.extend(d.glob("*.jsonl"))
+    for d in dirs:
+        candidates.extend(d.glob("*.jsonl"))
+    candidates = [p for p in candidates if not is_headless_transcript(p)]
     candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
 
-    for path in candidates:
-        if is_headless_transcript(path):
-            continue
-        # Launched from cwd (own project dir) -> accept directly; launched from an
-        # ancestor -> only accept if it actually references this cwd.
-        if str(path.parent) in own_dirs or _mentions_path(path, cwd_resolved):
-            return path
-    return None
+    for i, path in enumerate(candidates):
+        if str(path.parent) in own_dirs:
+            return Discovery(path=path, source="own", alternatives=len(candidates) - 1)
+        if _mentions_path(path, cwd_resolved):
+            return Discovery(path=path, source="reference", alternatives=len(candidates) - 1)
+    return Discovery()
+
+
+def latest_transcript_for(cwd: Path | str, home: Path | None = None) -> Path | None:
+    """The transcript path to grade for ``cwd`` (back-compat thin wrapper)."""
+    return discover_transcript(cwd, home).path
 
 
 def _result_failed(line: dict) -> bool | None:

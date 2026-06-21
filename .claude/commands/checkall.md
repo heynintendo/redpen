@@ -1,6 +1,6 @@
 ---
 description: Deep RedPen audit — verify claims AND reconcile them against the original request
-allowed-tools: Bash(redpen:*)
+allowed-tools: Bash(redpen:*), Bash(true:*)
 ---
 
 `/checkall` runs RedPen's deep pass over this session:
@@ -15,7 +15,11 @@ allowed-tools: Bash(redpen:*)
 The LLM layer runs on your own Claude Code subscription in headless mode (no API
 key, no per-token billing); it needs Claude Code installed and logged in.
 
-!`redpen check --deep`
+The trailing `|| true` keeps a `FAIL` verdict from being reported as a command
+error: RedPen exits non-zero on failures (so a git hook can gate on it), but
+here we only want the rendered verdict — whether or not anything failed.
+
+!`redpen check --deep || true`
 
 Report the result verbatim. Do not re-judge the task yourself or re-read the
 codebase — surface exactly what RedPen marked, especially the audit gaps.

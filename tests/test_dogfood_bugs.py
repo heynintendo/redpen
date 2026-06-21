@@ -150,3 +150,88 @@ def test_directory_claim_unverifiable_when_session_wrote_nothing_inside(tmp_path
     res = file_present(ProbeContext(cwd=work, changed_set=cs), path=str(work), created=True)
 
     assert res.verdict is Verdict.UNVERIFIABLE
+
+
+# --- multi-transcript selection: grade the CURRENT session, not the newest ---
+
+
+def test_active_session_id_read_from_env(monkeypatch):
+    from redpen.transcript import active_session_id
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
+    assert active_session_id() is None
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "  abc-123  ")
+    assert active_session_id() == "abc-123"
+
+
+def test_discovery_prefers_active_session_over_newest_transcript(tmp_path):
+    import os as _os
+
+    from redpen.transcript import discover_transcript
+    home = tmp_path / "home"
+    cwd = tmp_path / "proj"
+    cwd.mkdir()
+    proj = home / ".claude" / "projects" / encode_project_dir(cwd)
+    proj.mkdir(parents=True)
+
+    # The current session (by id) -- deliberately the OLDER file.
+    current = proj / "current-sid.jsonl"
+    _write_jsonl(current, [{"type": "assistant", "cwd": str(cwd), "entrypoint": "cli",
+                            "message": {"role": "assistant", "content": [{"type": "text", "text": "current work"}]}}])
+    # A NEWER, unrelated dev/test session full of false claims under the same dir.
+    decoy = proj / "decoy-dev.jsonl"
+    _write_jsonl(decoy, [{"type": "assistant", "cwd": str(cwd), "entrypoint": "cli",
+                          "message": {"role": "assistant", "content": [{"type": "text", "text": "Done. Pushed everything. All tests pass."}]}}])
+    _os.utime(current, (1, 1))
+    _os.utime(decoy, (2_000_000_000, 2_000_000_000))  # strictly newer
+
+    d = discover_transcript(cwd, home=home, session_id="current-sid")
+    assert d.path == current and d.source == "session" and not d.ambiguous
+
+    # Without the session id, the heuristic takes the newest -> ambiguous warning.
+    d2 = discover_transcript(cwd, home=home, session_id="")
+    assert d2.path == decoy and d2.ambiguous and d2.alternatives == 1
+
+
+def test_discovery_active_session_found_in_an_ancestor_dir(tmp_path):
+    from redpen.transcript import discover_transcript
+    home = tmp_path / "home"
+    launch = tmp_path / "proj"
+    child = launch / "subdir"
+    child.mkdir(parents=True)
+    proj = home / ".claude" / "projects" / encode_project_dir(launch)  # filed under launch
+    proj.mkdir(parents=True)
+    current = proj / "sid-xyz.jsonl"
+    _write_jsonl(current, [{"type": "assistant", "cwd": str(child), "entrypoint": "cli",
+                            "message": {"role": "assistant", "content": [{"type": "text", "text": "x"}]}}])
+
+    d = discover_transcript(child, home=home, session_id="sid-xyz")
+    assert d.path == current and d.source == "session"
+
+
+def test_discovery_fails_safe_when_session_unknown_and_ambiguous(tmp_path):
+    from redpen.transcript import discover_transcript
+    home = tmp_path / "home"
+    cwd = tmp_path / "proj"
+    cwd.mkdir()
+    proj = home / ".claude" / "projects" / encode_project_dir(cwd)
+    proj.mkdir(parents=True)
+    for name in ("a.jsonl", "b.jsonl"):
+        _write_jsonl(proj / name, [{"type": "assistant", "cwd": str(cwd), "entrypoint": "cli",
+                                    "message": {"role": "assistant", "content": [{"type": "text", "text": "x"}]}}])
+
+    d = discover_transcript(cwd, home=home, session_id="")  # active session can't be identified
+    assert d.path is not None and d.ambiguous and d.alternatives == 1
+
+
+def test_discovery_not_ambiguous_with_a_single_transcript(tmp_path):
+    from redpen.transcript import discover_transcript
+    home = tmp_path / "home"
+    cwd = tmp_path / "proj"
+    cwd.mkdir()
+    proj = home / ".claude" / "projects" / encode_project_dir(cwd)
+    proj.mkdir(parents=True)
+    _write_jsonl(proj / "only.jsonl", [{"type": "assistant", "cwd": str(cwd), "entrypoint": "cli",
+                                        "message": {"role": "assistant", "content": [{"type": "text", "text": "x"}]}}])
+    d = discover_transcript(cwd, home=home, session_id="")
+    assert d.path is not None and not d.ambiguous and d.alternatives == 0

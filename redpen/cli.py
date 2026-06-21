@@ -54,16 +54,18 @@ def cmd_check(args: argparse.Namespace) -> int:
     # Always load the transcript: several probes (tests_pass, exit_code_scan,
     # todos_remaining) judge against it even for an ad-hoc question. A
     # --transcript override bypasses auto-discovery (handy for CI and fixtures).
+    from .transcript import discover_transcript, parse_transcript
+
+    discovery = None
     if args.transcript:
         tpath = Path(args.transcript)
         if not tpath.is_file():
             print(f"{TOOL_NAME}: transcript not found: {tpath}", file=sys.stderr)
             return 2
-        from .transcript import parse_transcript
-
         transcript = parse_transcript(tpath)
     else:
-        transcript = load_transcript_for(cwd)
+        discovery = discover_transcript(cwd)
+        transcript = parse_transcript(discovery.path) if discovery.path else None
 
     # --deep engages the LLM judge on UNVERIFIABLE claims (deterministic probes
     # still run first). The judge sees only gathered evidence, never the codebase.
@@ -80,10 +82,20 @@ def cmd_check(args: argparse.Namespace) -> int:
         else:
             print(f"{TOOL_NAME}: --deep requested but ENABLE_LLM is off; running deterministic only.\n")
 
-    # Surface which transcript fed the run when it matters (deep audit / override).
-    if transcript is not None and transcript.path and (args.deep or args.transcript):
+    # Surface which transcript fed the run when it matters: the deep audit, an
+    # explicit override, or -- the fail-safe -- when discovery couldn't confirm
+    # this is the current session (several transcripts, no session-id match), so
+    # the user is never silently shown the wrong session's verdict.
+    if transcript is not None and transcript.path:
         p_src = Palette(_supports_color(sys.stdout) if color is None else color)
-        print(p_src.dim(f"transcript: {transcript.path}"))
+        ambiguous = discovery is not None and discovery.ambiguous
+        if args.deep or args.transcript or ambiguous:
+            print(p_src.dim(f"transcript: {transcript.path}"))
+        if ambiguous:
+            print(p_src.dim(
+                "note: couldn't confirm this is the current session "
+                "(several transcripts found) — pass --transcript <path> to be sure"
+            ))
 
     if args.question:
         claims = extract_claims(args.question, source="adhoc")
