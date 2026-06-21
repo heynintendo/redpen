@@ -25,8 +25,8 @@ def is_git_repo(path: Path | str) -> bool:
 
 
 def normalize(base: Path | str, path: str) -> str:
-    """Canonical absolute path for ``path`` resolved against ``base``."""
-    p = Path(path)
+    """Canonical absolute path for ``path`` resolved against ``base`` (``~`` expanded)."""
+    p = Path(path).expanduser()
     if not p.is_absolute():
         p = Path(base) / p
     try:

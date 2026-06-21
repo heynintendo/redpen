@@ -59,21 +59,29 @@ def mentions_tests_passing(sentence: str) -> bool:
     return bool(_TEST_TOKEN.search(sentence) and _PASS_TOKEN.search(sentence))
 
 
-# File creation: a create/write verb followed by a path-looking token (has a
-# dot-extension or a slash). Tight on purpose so "version 0.1" never matches.
+# A path-looking token. Path-like means: home-anchored (~/...), relative/absolute
+# anchored (./, ../, /), containing a slash (a file OR a directory, trailing /
+# allowed), or a dotted filename. Tight enough that plain words and "version 0.1"
+# never match on their own (a create verb still has to precede it in FILE_RE).
+_FILE_PATH = (
+    r"~/[\w./\-]*"                       # home-anchored: ~/sorting-algorithms/ , ~/x.py
+    r"|[\w.\-]*/[\w./\-]*"                # contains a slash: src/app.py , src/ , a/b/c/ , /abs , ./x
+    r"|[\w.\-]+\.[A-Za-z0-9]+"            # a dotted filename, multi-dot ok: app.py , x.y.z.py
+)
+
+# File creation: a create/write verb followed by a path-looking token.
 FILE_RE = re.compile(
     r"\b(?:creat(?:e|ed)|wr(?:ote|itten)|add(?:ed)?|generat(?:e|ed)|"
     r"sav(?:e|ed)|updat(?:e|ed)|modif(?:y|ied)|edit(?:ed)?|chang(?:e|ed)|"
     r"implement(?:ed)?)\b"
-    r"\s+(?:the\s+|a\s+|an\s+|new\s+)?(?:file\s+|module\s+|script\s+)?"
-    r"[`'\"]?(?P<path>[\w./\-]+(?:/[\w.\-]+|\.[A-Za-z0-9]+))[`'\"]?",
+    r"\s+(?:the\s+|a\s+|an\s+|new\s+)?(?:file\s+|module\s+|script\s+|directory\s+|folder\s+)?"
+    r"[`'\"]?(?P<path>" + _FILE_PATH + r")[`'\"]?",
     re.IGNORECASE,
 )
 
 # A continuation path in a conjunction: "Created X and Y" / "X, Y, and Z". The
 # verb only governs the first path, so further paths joined by and/comma/& would
 # otherwise be missed.
-_FILE_PATH = r"[\w./\-]+(?:/[\w.\-]+|\.[A-Za-z0-9]+)"
 _CONT_PATH_RE = re.compile(
     r"\s*(?:,|,?\s*and|&)\s+[`'\"]?(?P<path>" + _FILE_PATH + r")[`'\"]?",
     re.IGNORECASE,
@@ -89,7 +97,10 @@ def created_paths(sentence: str) -> list[str]:
     seen: set[str] = set()
 
     def _add(p: str) -> None:
-        if p not in seen:
+        # Trailing sentence punctuation isn't part of the path (a directory's
+        # trailing "/" is kept).
+        p = p.rstrip(".,;:!?")
+        if p and p not in seen:
             seen.add(p)
             out.append(p)
 
@@ -170,6 +181,17 @@ CLAIM_LIKE_RE = re.compile(
     r"renamed|moved|configured|installed|set up|setup|updated|changed|built|generated|"
     r"enabled|disabled|migrated|integrated|wired|replaced|introduced|cleaned up|"
     r"rewrote|extracted|optimi[sz]ed|documented)\b",
+    re.IGNORECASE,
+)
+
+# A "the code works / runs correctly" or "all three run/pass" completion claim.
+# There is nothing a probe can run-verify from prose, so via the catch-all this
+# becomes an honest UNVERIFIABLE line instead of being silently dropped -- a
+# real claim a heavy user makes ("all three run correctly") must not vanish.
+WORKS_RE = re.compile(
+    r"\b(?:runs?|ran|works?|working|execut\w+|behav\w+|compil\w+)\s+"
+    r"(?:correctly|fine|cleanly|properly|as expected|successfully|without\s+(?:any\s+)?errors?)\b"
+    r"|\ball\s+(?:\w+\s+){0,2}(?:run|ran|runs|pass(?:es|ed)?|works?|worked|succeed\w*)\b",
     re.IGNORECASE,
 )
 

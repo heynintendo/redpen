@@ -107,20 +107,55 @@ def is_headless_transcript(path: Path) -> bool:
     return _peek_entrypoint(path) in _HEADLESS_ENTRYPOINTS
 
 
-def latest_transcript_for(cwd: Path | str, home: Path | None = None) -> Path | None:
-    """Most recently modified real session ``*.jsonl`` for this project, or None.
+def _mentions_path(path: Path, needle: str) -> bool:
+    """True if the transcript's raw text references ``needle`` (a cwd path).
 
-    Skips headless `claude -p` transcripts (entrypoint ``sdk-cli``) so RedPen
-    never auto-discovers its own judge/decompose calls.
+    Claude Code files a transcript under the directory the session LAUNCHED from,
+    not the agent's later cwd. So a session started in ~ that worked in
+    ~/sorting-algorithms/ is filed under ~ -- but the agent's cwd/file paths inside
+    it reference ~/sorting-algorithms/. That reference is how we confirm an
+    ancestor-launched session is the relevant one before accepting it.
+    """
+    try:
+        with path.open(encoding="utf-8", errors="ignore") as fh:
+            return needle in fh.read()
+    except OSError:
+        return False
+
+
+def latest_transcript_for(cwd: Path | str, home: Path | None = None) -> Path | None:
+    """Most recently active real session ``*.jsonl`` relevant to ``cwd``, or None.
+
+    Searches the cwd's own project dir AND every ancestor's (the session may have
+    been launched from a parent/launch directory). A transcript is accepted when
+    it lives in cwd's own project dir (launched from cwd) OR its content references
+    cwd (launched from an ancestor, worked here). The most recent accepted one
+    wins; an unrelated session is never silently picked. Headless `claude -p`
+    transcripts (entrypoint ``sdk-cli``) are skipped so RedPen never discovers its
+    own judge/decompose calls.
     """
     base = transcript_base(home)
+    cwd_resolved = str(Path(cwd).resolve())
+
+    own_dirs = {str(d) for d in _candidate_dirs(cwd, base)}
+    search_dirs: list[Path] = list(_candidate_dirs(cwd, base))
+    for ancestor in Path(cwd).resolve().parents:
+        search_dirs.extend(_candidate_dirs(ancestor, base))
+
     candidates: list[Path] = []
-    for d in _candidate_dirs(cwd, base):
-        if d.is_dir():
+    seen: set[str] = set()
+    for d in search_dirs:
+        if d.is_dir() and str(d) not in seen:
+            seen.add(str(d))
             candidates.extend(d.glob("*.jsonl"))
     candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
     for path in candidates:
-        if not is_headless_transcript(path):
+        if is_headless_transcript(path):
+            continue
+        # Launched from cwd (own project dir) -> accept directly; launched from an
+        # ancestor -> only accept if it actually references this cwd.
+        if str(path.parent) in own_dirs or _mentions_path(path, cwd_resolved):
             return path
     return None
 

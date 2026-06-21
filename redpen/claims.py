@@ -120,9 +120,10 @@ def _specs_for_sentence(s: str) -> list[ProbeSpec]:
         for spec in default_suite():
             specs.append(spec)
 
-    # Catch-all: an accomplishment claim with nothing a probe can check still
-    # gets surfaced as a labelled UNVERIFIABLE line, never silently dropped.
-    if not specs and len(s) <= 200 and patterns.CLAIM_LIKE_RE.search(sa):
+    # Catch-all: an accomplishment claim with nothing a probe can check -- an
+    # "I refactored X" or "all three run correctly" -- still gets surfaced as a
+    # labelled UNVERIFIABLE line, never silently dropped.
+    if not specs and len(s) <= 200 and (patterns.CLAIM_LIKE_RE.search(sa) or patterns.WORKS_RE.search(sa)):
         specs.append(ProbeSpec("unmapped", label=s[:80]))
 
     return _dedupe(specs)

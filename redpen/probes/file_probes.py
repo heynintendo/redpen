@@ -53,7 +53,19 @@ def file_present(ctx: ProbeContext, path: str | None = None, created: bool = Fal
     # UNVERIFIABLE, never OK (the cross-session false-OK guard).
     if created and ctx.changed_set is not None:
         provenance = ctx.changed_set.provenance(ctx.cwd, path)
-        if "transcript" not in provenance:
+        attributable = "transcript" in provenance
+        # A "created <dir>/" claim is substantiated when the session's transcript
+        # wrote files INSIDE that directory (the agent rarely "writes" a folder
+        # directly -- it writes the files in it).
+        if not attributable and p.is_dir():
+            from ..changeset import normalize as _norm
+
+            prefix = _norm(ctx.cwd, path).rstrip("/") + "/"
+            attributable = any(
+                "transcript" in tags and cs_path.startswith(prefix)
+                for cs_path, tags in ctx.changed_set.paths.items()
+            )
+        if not attributable:
             return unverifiable(
                 "file_present",
                 f"{path} is there, but this session's transcript shows no edit to it — "

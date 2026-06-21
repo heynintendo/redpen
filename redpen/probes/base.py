@@ -66,8 +66,12 @@ class ProbeContext:
     baseline: dict | None = None
 
     def resolve(self, path: str) -> Path:
-        """Resolve a possibly-relative path against the project root."""
-        p = Path(path)
+        """Resolve a possibly-relative path against the project root.
+
+        A leading ``~`` is expanded to the home directory, so a claim about
+        ``~/sorting-algorithms/`` resolves to a real path.
+        """
+        p = Path(path).expanduser()
         return p if p.is_absolute() else (self.cwd / p)
 
 
