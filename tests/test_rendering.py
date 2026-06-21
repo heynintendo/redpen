@@ -4,11 +4,23 @@ from __future__ import annotations
 
 import json
 
+from redpen import render
 from redpen.claims import extract_claims
 from redpen.cli import main
+from redpen.config import TOOL_NAME
 from redpen.engine import Finding
 from redpen.probes.base import ProbeResult, Verdict
 from redpen.render import Palette, _marker, render_report
+
+
+class _TTY:
+    def isatty(self):
+        return True
+
+
+class _NotTTY:
+    def isatty(self):
+        return False
 
 
 def _finding(verdict, subject="something", detail="because reasons"):
@@ -32,7 +44,7 @@ def test_marker_no_color_falls_back_to_plain_labels():
     p = Palette(False)
     assert _marker(p, Verdict.OK).rstrip() == "[OK]"
     assert _marker(p, Verdict.FAIL).rstrip() == "[FAIL]"
-    assert _marker(p, Verdict.UNVERIFIABLE).rstrip() == "[??]"
+    assert _marker(p, Verdict.UNVERIFIABLE).rstrip() == "[ ? ]"
     assert all("\x1b" not in _marker(p, v) for v in Verdict)  # no ANSI when off
 
 
@@ -45,7 +57,7 @@ def test_markers_pad_to_one_width_so_columns_stack():
 def test_report_no_color_uses_bracket_labels_and_no_ansi():
     findings = [_finding(Verdict.OK), _finding(Verdict.FAIL), _finding(Verdict.UNVERIFIABLE)]
     out = render_report(findings, show_art=False, color=False)
-    assert "[OK]" in out and "[FAIL]" in out and "[??]" in out
+    assert "[OK]" in out and "[FAIL]" in out and "[ ? ]" in out
     assert "\x1b" not in out
 
 
@@ -54,35 +66,103 @@ def test_report_color_emits_bright_bold_markers():
     assert "\x1b[1;92m" in out and "● OK" in out
 
 
-# --- humanized headlines for every state ------------------------------------
+# --- copy: counts-first tally, plain words, one optional subhead -------------
 
 
-def test_all_pass_headline_keeps_the_voice():
+def test_headline_leads_with_the_plain_tally():
+    # 1 OK, 2 UNV, 1 FAIL -> the first non-empty line is the tally, plain words.
+    findings = [_finding(Verdict.OK), _finding(Verdict.UNVERIFIABLE),
+                _finding(Verdict.UNVERIFIABLE), _finding(Verdict.FAIL)]
+    out = render_report(findings, show_art=False, color=False)
+    first = out.strip().splitlines()[0]
+    assert first == "1 verified · 2 can't confirm · 1 failed"
+    assert "UNVERIFIABLE" not in out and "Marked." not in out  # no jargon, no old voice
+
+
+def test_all_pass_tally_and_subhead():
     out = render_report([_finding(Verdict.OK)], show_art=False, color=False)
-    assert "Everything checks out. Don't get used to it." in out
+    assert "1 verified · 0 can't confirm · 0 failed" in out
+    assert "All clear." in out
 
 
-def test_some_fail_headline():
+def test_some_fail_subhead_points_at_the_failure():
     out = render_report([_finding(Verdict.FAIL), _finding(Verdict.OK)], show_art=False, color=False)
-    assert "doesn't hold up" in out
+    assert "1 verified · 0 can't confirm · 1 failed" in out
+    assert "Look at the failed line first." in out
 
 
-def test_mixed_ok_and_unsure_headline():
+def test_mixed_ok_and_unsure_subhead():
     out = render_report([_finding(Verdict.OK), _finding(Verdict.UNVERIFIABLE)], show_art=False, color=False)
-    assert "The rest holds up" in out and "can't confirm" in out.lower()
+    assert "1 verified · 1 can't confirm · 0 failed" in out
+    assert "The rest checks out." in out
 
 
-def test_all_unsure_headline_is_human(tmp_path, monkeypatch, capsys):
+def test_all_unsure_tally(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)  # empty non-git folder, no transcript
     main(["check", "the tests pass", "--no-art", "--no-color"])
     out = capsys.readouterr().out
-    assert "Can't confirm any of these" in out
-    assert "not wrong, just unverified" in out
+    assert "0 verified · 1 can't confirm · 0 failed" in out
+    assert "Nothing here could be checked this session." in out
 
 
-def test_footer_uses_unsure_label():
-    out = render_report([_finding(Verdict.UNVERIFIABLE)], show_art=False, color=False, elapsed=0.1)
-    assert "unsure" in out and "UNVERIFIABLE" not in out
+# --- terminal capability tiers ----------------------------------------------
+
+
+def test_color_level_truecolor(monkeypatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    monkeypatch.setenv("COLORTERM", "truecolor")
+    monkeypatch.setenv("TERM", "xterm-256color")
+    assert render._color_level(_TTY()) == 3
+
+
+def test_color_level_256_when_no_colorterm(monkeypatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    monkeypatch.delenv("COLORTERM", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+    assert render._color_level(_TTY()) == 2
+
+
+def test_color_level_16_basic_term(monkeypatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    monkeypatch.delenv("COLORTERM", raising=False)
+    monkeypatch.setenv("TERM", "xterm")
+    assert render._color_level(_TTY()) == 1
+
+
+def test_color_level_none_when_no_color_or_non_tty(monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert render._color_level(_TTY()) == 0
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    assert render._color_level(_NotTTY()) == 0
+
+
+# --- mascot degrades by capability ------------------------------------------
+
+
+def test_mascot_truecolor_then_256_then_ascii():
+    t3, t2 = render.load_mascot_art(3), render.load_mascot_art(2)
+    assert t3 and "38;2;" in t3                                  # full truecolor art
+    assert t2 and "38;5;" in t2 and "38;2;" not in t2            # 256-color, no 24-bit escapes
+    assert render.load_mascot_art(1) is None                    # below 256 -> ASCII fallback
+    block = render._header_block(Palette(True), True, 1)
+    assert "\x1b[38;2" not in block and TOOL_NAME in block       # clean ASCII mascot, named
+
+
+# --- reasons read fully, never cut mid-word ---------------------------------
+
+
+def test_long_reason_wraps_and_is_not_cut_midword(monkeypatch):
+    monkeypatch.setenv("COLUMNS", "100")
+    long = ("nothing ran this session and there is no runner configured here, "
+            "so I cannot confirm the linter is clean")
+    out = render_report([_finding(Verdict.UNVERIFIABLE, "the linter is clean", long)],
+                        show_art=False, color=False)
+    for word in long.replace(",", "").split():
+        assert word in out, f"reason word dropped: {word}"
 
 
 # --- nothing to grade -------------------------------------------------------

@@ -1,13 +1,17 @@
-"""Verdict renderer: compact, fast, ANSI-colored.
+"""Verdict renderer: compact, fast, terminal-aware.
 
-One line per finding -- symbol + subject + a one-line piece of evidence -- with
-a personality headline and a summary footer. The examiner is terse and exacting.
+Leads with a plain tally (verified / can't confirm / failed), one line per
+finding (marker + subject + a readable reason), and a header mascot that degrades
+by terminal capability: full truecolor pixel art on truecolor TTYs, a 256-color
+version on 256-color terminals, a small clean ASCII mascot as the last resort.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 import sys
+import textwrap
 from pathlib import Path
 
 from .config import TOOL_NAME
@@ -18,41 +22,57 @@ from .probes.base import Verdict
 _CSI = "\033["
 
 # A verdict marker is a glyph + a short word. Color carries OK vs FAIL (same dot
-# shape), and the word label carries it when color is off (colorblind/NO_COLOR);
-# UNSURE uses a distinct hazard-triangle shape. Colored, each is bright + bold;
-# with color off we fall back to plain bracket labels. Markers pad to one width.
+# shape); the word carries it with color off. UNSURE uses a distinct triangle.
+# With color off we fall back to a clean, aligned bracket label.
 _MARKERS = {
     Verdict.OK: ("●", "OK", "[OK]", "green_b"),
     Verdict.FAIL: ("●", "FAIL", "[FAIL]", "red_b"),
-    Verdict.UNVERIFIABLE: ("▲", "UNSURE", "[??]", "amber_b"),
+    Verdict.UNVERIFIABLE: ("▲", "UNSURE", "[ ? ]", "amber_b"),
 }
 _MARKER_WIDTH = 8  # visible width; "▲ UNSURE" is the widest
-
-# String-keyed view for callers that only have the verdict name.
 _VERDICT_BY_NAME = {v.value: v for v in Verdict}
 
+# Plain words for the human-facing tally.
+_WORD = {Verdict.OK: "verified", Verdict.FAIL: "failed", Verdict.UNVERIFIABLE: "can't confirm"}
 
-def _marker(p: Palette, verdict: Verdict) -> str:
-    """A fixed-width verdict marker: bright bold "● OK" / "● FAIL" / "▲ UNSURE",
-    or plain "[OK]" / "[FAIL]" / "[??]" with color off."""
-    glyph, word, plain, paint = _MARKERS[verdict]
-    if not p.on:
-        return plain.ljust(_MARKER_WIDTH)
-    text = f"{glyph} {word}"
-    pad = " " * max(0, _MARKER_WIDTH - len(text))  # uncolored padding aligns columns
-    return getattr(p, paint)(text) + pad
+
+# --- terminal capability ----------------------------------------------------
+def _color_level(stream) -> int:
+    """Terminal color capability: 0 none · 1 16-color · 2 256-color · 3 truecolor.
+
+    Truecolor is used ONLY when COLORTERM actually advertises it, so 256-color
+    terminals (e.g. macOS Terminal.app) get a representation they can render
+    instead of silently-dropped 24-bit escapes.
+    """
+    if os.environ.get("NO_COLOR"):
+        return 0
+    force = os.environ.get("FORCE_COLOR")
+    isatty = bool(getattr(stream, "isatty", lambda: False)())
+    if not isatty and not force:
+        return 0
+    colorterm = os.environ.get("COLORTERM", "").lower()
+    if colorterm in ("truecolor", "24bit") or force == "3":
+        return 3
+    term = os.environ.get("TERM", "")
+    if "256color" in term or "256" in colorterm or force == "2":
+        return 2
+    if term and term != "dumb":
+        return 1
+    # Color was forced but the terminal advertises nothing -> 256 renders widely.
+    return 2 if force else 0
 
 
 def _supports_color(stream) -> bool:
-    if os.environ.get("NO_COLOR"):
-        return False
-    if os.environ.get("FORCE_COLOR"):
-        return True
-    return bool(getattr(stream, "isatty", lambda: False)())
+    """Back-compat boolean: any color at all."""
+    return _color_level(stream) >= 1
 
 
 class Palette:
-    """Wraps text in ANSI codes, or doesn't, depending on ``on``."""
+    """Wraps text in ANSI codes, or doesn't, depending on ``on``.
+
+    Marker/tally colors use the bright 16-color (90-series) codes, which render
+    on every color terminal -- 16, 256, and truecolor alike.
+    """
 
     def __init__(self, on: bool):
         self.on = on
@@ -78,8 +98,6 @@ class Palette:
     def bold_red(self, s):
         return self._w("1;31", s)
 
-    # Bright + bold, standard ANSI (90-series) so verdict markers render
-    # distinctly on every terminal, not just truecolor ones.
     def green_b(self, s):
         return self._w("1;92", s)
 
@@ -90,22 +108,35 @@ class Palette:
         return self._w("1;93", s)
 
 
+def _marker(p: Palette, verdict: Verdict) -> str:
+    """A fixed-width verdict marker: bright bold "● OK" / "● FAIL" / "▲ UNSURE",
+    or a clean aligned "[OK]" / "[FAIL]" / "[ ? ]" with color off."""
+    glyph, word, plain, paint = _MARKERS[verdict]
+    if not p.on:
+        return plain.ljust(_MARKER_WIDTH)
+    text = f"{glyph} {word}"
+    pad = " " * max(0, _MARKER_WIDTH - len(text))  # uncolored padding aligns columns
+    return getattr(p, paint)(text) + pad
+
+
 def _truncate(s: str, n: int) -> str:
     s = " ".join(s.split())
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
-# The header mascot is truecolor ANSI half-block art shipped at
-# docs/mascot_ansi.txt (and mirrored into the package for wheel installs).
-_ART_CANDIDATES = (
-    Path(__file__).resolve().parent.parent / "docs" / "mascot_ansi.txt",
-    Path(__file__).resolve().parent / "_assets" / "mascot_ansi.txt",
-)
+def _term_width() -> int:
+    return min(max(shutil.get_terminal_size((100, 24)).columns, 60), 120)
 
 
-def load_mascot_art() -> str | None:
-    """Read the truecolor ANSI mascot, or None if it can't be found/read."""
-    for path in _ART_CANDIDATES:
+# --- header mascot, by capability -------------------------------------------
+# Shipped at docs/mascot_ansi*.txt (and mirrored into redpen/_assets for wheels).
+def _art_paths(name: str):
+    here = Path(__file__).resolve().parent
+    return (here.parent / "docs" / name, here / "_assets" / name)
+
+
+def _read_art(name: str) -> str | None:
+    for path in _art_paths(name):
         try:
             if path.is_file():
                 return path.read_text(encoding="utf-8").rstrip("\n")
@@ -114,57 +145,68 @@ def load_mascot_art() -> str | None:
     return None
 
 
-def _header_block(p: Palette, show_art: bool, on: bool) -> str | None:
-    """The header above a report.
+# A small, clean ASCII mascot for 16-color / no-color terminals (last resort).
+_ASCII_MASCOT = r"""   .---.
+  ( o o )   {tool}
+   \ ^ /    grades what you claimed
+    '-'"""
 
-    Returns the rich ANSI mascot only when art is wanted AND color is on (which
-    already accounts for --no-color, NO_COLOR and a non-TTY stdout). Otherwise a
-    one-line text title. Returns None when --no-art is set (no header at all).
-    """
+
+def load_mascot_art(level: int = 3) -> str | None:
+    """The best mascot the terminal can render: truecolor (3), 256-color (2), or
+    None below that (the caller shows the ASCII mascot)."""
+    if level >= 3:
+        return _read_art("mascot_ansi.txt") or _read_art("mascot_ansi_256.txt")
+    if level == 2:
+        return _read_art("mascot_ansi_256.txt") or _read_art("mascot_ansi.txt")
+    return None
+
+
+def _header_block(p: Palette, show_art: bool, level: int) -> str | None:
+    """The header above a report, or None when --no-art is set."""
     if not show_art:
         return None
-    if on:
-        art = load_mascot_art()
-        if art:
-            return art
-    return p.bold(f"{TOOL_NAME} —")
+    art = load_mascot_art(level)
+    if art:
+        return art
+    return p.bold(_ASCII_MASCOT.format(tool=TOOL_NAME))
 
 
 def render_header(show_art: bool = True, color: bool | None = None) -> str:
     """Public header for callers outside the report (e.g. the no-claims path)."""
-    on = _supports_color(sys.stdout) if color is None else color
-    block = _header_block(Palette(on), show_art, on)
+    level = _color_level(sys.stdout) if color is None else (3 if color else 0)
+    block = _header_block(Palette(level >= 1), show_art, level)
     return block or ""
 
 
-def _headline(p: Palette, counts: dict) -> str:
+# --- copy: counts-first, plain ----------------------------------------------
+def _tally_line(p: Palette, counts: dict) -> str:
+    """The headline: the plain tally, first and unmissable."""
+    return " · ".join([
+        p.green_b(f"{counts[Verdict.OK]} verified"),
+        p.amber_b(f"{counts[Verdict.UNVERIFIABLE]} can't confirm"),
+        p.red_b(f"{counts[Verdict.FAIL]} failed"),
+    ])
+
+
+def _subhead(p: Palette, counts: dict) -> str:
+    """One optional, plain line under the tally -- never at the cost of clarity."""
     ok, fail, unv = counts[Verdict.OK], counts[Verdict.FAIL], counts[Verdict.UNVERIFIABLE]
     if fail:
-        if fail == 1:
-            return p.bold("Marked. One claim doesn't hold up:")
-        if ok == 0 and unv == 0:
-            return p.bold(f"Marked. None of these {fail} hold up:")
-        return p.bold(f"Marked. {fail} of these claims don't hold up:")
-    if unv and ok:
-        thing = "one thing" if unv == 1 else f"{unv} things"
-        return p.bold(f"Marked. The rest holds up, but there's {thing} I can't confirm.")
-    if unv and not ok:
-        return p.bold(
-            "Can't confirm any of these. There's nothing in the session that proves "
-            "them either way — not wrong, just unverified."
-        )
-    return p.bold("Marked. Everything checks out. Don't get used to it.")
+        msg = "None of it holds up." if (ok == 0 and unv == 0) else (
+            "Look at the failed line first." if fail == 1 else "Look at the failed lines first.")
+    elif unv and ok:
+        msg = "The rest checks out."
+    elif unv and not ok:
+        msg = "Nothing here could be checked this session."
+    else:
+        msg = "All clear."
+    return p.dim(msg)
 
 
-def _footer(p: Palette, counts: dict, elapsed: float | None) -> str:
-    ok, fail, unv = counts[Verdict.OK], counts[Verdict.FAIL], counts[Verdict.UNVERIFIABLE]
-    parts = " · ".join(
-        [p.green_b(f"{ok} OK"), p.red_b(f"{fail} FAIL"), p.amber_b(f"{unv} unsure")]
-    )
-    foot = "  " + parts
-    if elapsed is not None:
-        foot += p.dim(f"   ({elapsed:.1f}s)")
-    return foot
+def _headline(p: Palette, counts: dict) -> str:
+    """Back-compat single-string headline (tally + subhead) for legacy callers."""
+    return _tally_line(p, counts) + "\n" + _subhead(p, counts)
 
 
 def render_report(
@@ -174,29 +216,42 @@ def render_report(
     color: bool | None = None,
     elapsed: float | None = None,
 ) -> str:
-    on = _supports_color(sys.stdout) if color is None else color
+    level = _color_level(sys.stdout) if color is None else (3 if color else 0)
+    on = level >= 1
     p = Palette(on)
     out: list[str] = []
 
-    header = _header_block(p, show_art, on)
+    header = _header_block(p, show_art, level)
     if header is not None:
         out.append(header)
         out.append("")
 
     counts = tally(findings)
-    out.append(_headline(p, counts))
+    out.append(_tally_line(p, counts))
+    out.append(_subhead(p, counts))
     out.append("")
 
-    width = min(max((len(f.display) for f in findings), default=12), 40)
+    subj_w = min(max((len(f.display) for f in findings), default=12), 40)
+    # Visible columns before the reason: "  NN. " + marker(8) + "  " + subject + "  ".
+    reason_indent = 2 + 4 + _MARKER_WIDTH + 2 + subj_w + 2
+    reason_w = max(24, _term_width() - reason_indent)
+
     for i, f in enumerate(findings, start=1):
         marker = _marker(p, f.result.verdict)
-        subject = _truncate(f.display, 40).ljust(width)
-        evidence = p.dim(_truncate(f.result.detail, 60))
-        out.append(f"  {p.dim(f'{i:>2}.')} {marker}  {subject}  {evidence}")
+        subject = _truncate(f.display, 40).ljust(subj_w)
+        lines = textwrap.wrap(" ".join(f.result.detail.split()), reason_w) or [""]
+        if len(lines) > 2:  # keep it compact; never cut mid-word
+            lines = lines[:2]
+            lines[1] = _truncate(lines[1] + " …", reason_w)
+        out.append(f"  {p.dim(f'{i:>2}.')} {marker}  {subject}  {p.dim(lines[0])}")
+        for cont in lines[1:]:
+            out.append(" " * reason_indent + p.dim(cont))
 
     out.append("")
-    out.append(_footer(p, counts, elapsed))
-    out.append(p.dim("  run `redpen explain <n>` to see the evidence behind any line"))
+    hint = p.dim("  run `redpen explain <n>` to see the evidence behind any line")
+    if elapsed is not None:
+        hint += p.dim(f"   ({elapsed:.1f}s)")
+    out.append(hint)
     return "\n".join(out)
 
 
@@ -204,8 +259,8 @@ def render_explain(record: dict, *, color: bool | None = None) -> str:
     """Full audit trail for one numbered verdict from the last run."""
     import json as _json
 
-    on = _supports_color(sys.stdout) if color is None else color
-    p = Palette(on)
+    level = _color_level(sys.stdout) if color is None else (3 if color else 0)
+    p = Palette(level >= 1)
     verdict = record.get("verdict", "UNVERIFIABLE")
     marker = _marker(p, _VERDICT_BY_NAME.get(verdict, Verdict.UNVERIFIABLE)).rstrip()
 
@@ -236,8 +291,8 @@ def render_audit(items: list[dict], *, color: bool | None = None) -> str:
     """Render the full-request audit: each asked item vs. what holds up."""
     if not items:
         return ""
-    on = _supports_color(sys.stdout) if color is None else color
-    p = Palette(on)
+    level = _color_level(sys.stdout) if color is None else (3 if color else 0)
+    p = Palette(level >= 1)
 
     style = {
         "DONE": (p.green_b, "●"),
@@ -276,8 +331,8 @@ def render_audit(items: list[dict], *, color: bool | None = None) -> str:
 
 
 def render_history(rows: list[HistoryRow], *, color: bool | None = None) -> str:
-    on = _supports_color(sys.stdout) if color is None else color
-    p = Palette(on)
+    level = _color_level(sys.stdout) if color is None else (3 if color else 0)
+    p = Palette(level >= 1)
     if not rows:
         return p.dim("Nothing in the ledger yet — run `redpen check` to start recording verdicts.")
 

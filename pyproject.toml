@@ -34,9 +34,11 @@ redpen = "redpen.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["redpen"]
 
-# Ship the ANSI mascot inside the wheel so installed copies render the header.
+# Ship the ANSI mascots inside the wheel so installed copies render the header
+# (truecolor + a 256-color version for terminals without truecolor support).
 [tool.hatch.build.targets.wheel.force-include]
 "docs/mascot_ansi.txt" = "redpen/_assets/mascot_ansi.txt"
+"docs/mascot_ansi_256.txt" = "redpen/_assets/mascot_ansi_256.txt"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
