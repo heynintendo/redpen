@@ -324,3 +324,29 @@ def test_color_can_be_force_disabled_even_on_a_tty(monkeypatch):
     monkeypatch.delenv("REDPEN_COLOR", raising=False)
     monkeypatch.setenv("CLICOLOR", "0")
     assert render._color_level(_TTY()) == 0
+
+
+def test_unmapped_claim_label_is_not_capped_at_extraction():
+    # The claim truncation the user hit lived in the extractor (label=s[:80]),
+    # not the renderer. The full sentence must survive so the table can wrap it.
+    s = ("I removed the diagnostic logging and restored the original timeout "
+         "handling in the network client, and deployed to staging")
+    claims = extract_claims(s, source="transcript")
+    labels = [sp.label for c in claims for sp in c.probe_specs if sp.name == "unmapped"]
+    assert labels == [s]  # full claim sentence, never clipped to 80 chars
+
+
+def test_long_unmapped_claim_renders_in_full_through_the_pipeline(monkeypatch):
+    monkeypatch.setenv("COLUMNS", "100")
+    from redpen.engine import Finding
+    s = ("I removed the diagnostic logging and restored the original timeout "
+         "handling in the network client, and deployed to staging")
+    claims = extract_claims(s, source="transcript")
+    spec = next(sp for c in claims for sp in c.probe_specs if sp.name == "unmapped")
+    f = Finding(claim_text=s, source="transcript",
+                result=ProbeResult("unmapped", Verdict.UNVERIFIABLE, "no probe covers this claim"),
+                label=spec.label)
+    out = render_report([f], show_art=False, color=False)
+    assert "…" not in out
+    for word in s.replace(",", "").split():
+        assert word in _plain(out), f"claim word dropped: {word}"

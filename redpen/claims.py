@@ -130,7 +130,9 @@ def _specs_for_sentence(s: str) -> list[ProbeSpec]:
     if (not specs and len(s) <= 200
             and (patterns.CLAIM_LIKE_RE.search(sa) or patterns.WORKS_RE.search(sa))
             and not patterns.is_meta_recap(sa)):
-        specs.append(ProbeSpec("unmapped", label=s[:80]))
+        # The full claim sentence is the label; the renderer wraps it, never clips
+        # it. (The sentence is already bounded by the len(s) <= 200 guard above.)
+        specs.append(ProbeSpec("unmapped", label=s))
 
     return _dedupe(specs)
 
@@ -206,7 +208,7 @@ def extract_claims(text: str, source: str = "transcript") -> list[Claim]:
     if narrates and not patterns.is_non_claim(text):
         return [Claim(text=label, probe_specs=default_suite(), source=source)]
     if source == "adhoc" and not patterns.is_non_claim(text):
-        return [Claim(text=label, probe_specs=[ProbeSpec("unmapped", label=label[:80])], source=source)]
+        return [Claim(text=label, probe_specs=[ProbeSpec("unmapped", label=label)], source=source)]
     return []
 
 
