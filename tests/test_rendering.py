@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from redpen import render
 from redpen.claims import extract_claims
@@ -152,17 +153,69 @@ def test_mascot_truecolor_then_256_then_ascii():
     assert "\x1b[38;2" not in block and TOOL_NAME in block       # clean ASCII mascot, named
 
 
-# --- reasons read fully, never cut mid-word ---------------------------------
+# --- table layout: never truncate, full sentences, wrapped not clipped ------
 
 
-def test_long_reason_wraps_and_is_not_cut_midword(monkeypatch):
+def _plain(s):
+    return " ".join(re.sub(r"\x1b\[[0-9;]*m", "", s).split())
+
+
+def _long_finding():
+    claim = ("I removed the diagnostic logging and restored the original timeout "
+             "handling in the network client")
+    reason = ("the agent called it done, but its own output shows a failure: "
+              "Error: Domain not found while resolving the upstream host for the deploy step")
+    return _finding(Verdict.FAIL, claim, reason), claim, reason
+
+
+def test_no_truncation_anywhere_in_the_table(monkeypatch):
     monkeypatch.setenv("COLUMNS", "100")
-    long = ("nothing ran this session and there is no runner configured here, "
-            "so I cannot confirm the linter is clean")
-    out = render_report([_finding(Verdict.UNVERIFIABLE, "the linter is clean", long)],
+    f, claim, reason = _long_finding()
+    out = render_report([f], show_art=False, color=False)
+    assert "…" not in out  # nothing is clipped with an ellipsis
+    flat = _plain(out)
+    # every word of the long claim and the long reason survives (wrapped across
+    # lines and columns, never dropped). Side-by-side columns interleave when
+    # flattened, so check word presence here; the contiguous-phrase check lives
+    # in the narrow/beneath test below.
+    for word in claim.split() + reason.replace(":", "").split():
+        assert word in flat, f"word dropped: {word}"
+
+
+def test_reasons_render_as_complete_sentences(monkeypatch):
+    monkeypatch.setenv("COLUMNS", "100")
+    f = _finding(Verdict.OK, "everything is pushed",
+                 "nothing left to push — you're level with origin/main")
+    out = render_report([f], show_art=False, color=False)
+    flat = _plain(out)
+    # the em-dash clause break becomes a real sentence break; capitalized; period
+    assert "Nothing left to push. You're level with origin/main." in flat
+    assert "—" not in flat  # no em-dash left in the rendered reason
+
+
+def test_table_columns_stay_aligned_across_wrapped_rows(monkeypatch):
+    monkeypatch.setenv("COLUMNS", "100")
+    f, _, _ = _long_finding()  # a long claim that wraps onto continuation lines
+    out = render_report([f, _finding(Verdict.OK, "wrote app.py", "app.py is there (412 bytes)")],
                         show_art=False, color=False)
-    for word in long.replace(",", "").split():
-        assert word in out, f"reason word dropped: {word}"
+    assert "[OK]" in out and "[FAIL]" in out and "…" not in out
+    lines = out.splitlines()
+    claim_col = next(line.index("I removed") for line in lines if "I removed" in line)
+    # the claim continuation lines and the second row's claim all stack at one column
+    for needle in ("restored the original", "in the network client", "Wrote app.py"):
+        line = next(line for line in lines if needle in line)
+        assert line.index(needle) == claim_col, f"{needle!r} not aligned to claim column"
+
+
+def test_narrow_terminal_degrades_without_truncating(monkeypatch):
+    monkeypatch.setenv("COLUMNS", "46")  # narrow: reason drops beneath the row
+    f, claim, reason = _long_finding()
+    out = render_report([f], show_art=False, color=False)
+    assert "…" not in out
+    flat = _plain(out)
+    assert "Domain not found while resolving the upstream host for the deploy step" in flat
+    for word in claim.split():
+        assert word in flat
 
 
 # --- nothing to grade -------------------------------------------------------

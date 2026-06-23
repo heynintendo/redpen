@@ -9,6 +9,7 @@ version on 256-color terminals, a small clean ASCII mascot as the last resort.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sys
 import textwrap
@@ -159,13 +160,96 @@ def _marker(p: Palette, verdict: Verdict) -> str:
     return getattr(p, paint)(text) + pad
 
 
+def _term_width() -> int:
+    return min(max(shutil.get_terminal_size((100, 24)).columns, 40), 120)
+
+
+def _cap(s: str) -> str:
+    """Collapse whitespace and capitalize the first letter for sentence feel.
+
+    Leaves the first token alone when it is a path, filename, command, or other
+    code token (contains ``.`` / ``/`` / ``\\`` or is backtick-quoted), so
+    "config.py does not exist" and "`pytest` ran" are never mangled. Never
+    truncates.
+    """
+    s = " ".join(s.split())
+    if not s:
+        return s
+    first = s.split(None, 1)[0]
+    if first[:1].isalpha() and not any(c in first for c in "./\\`"):
+        return s[0].upper() + s[1:]
+    return s
+
+
+def _humanize_reason(detail: str) -> str:
+    """Render a probe's reason as a complete, plain sentence. Presentation only:
+    collapse whitespace, turn an ' — ' clause break into a sentence break,
+    capitalize each sentence (leaving code tokens intact), and end with a period
+    when the text ends in a word, not after quoted evidence. Never truncates."""
+    s = " ".join((detail or "").split())
+    if not s:
+        return ""
+    s = re.sub(r"\s+[—–]\s+", ". ", s)  # an em/en-dash clause break becomes a sentence
+    parts = [p for p in re.split(r"(?<=[.!?])\s+", s) if p]
+    s = " ".join(_cap(p) for p in parts)
+    if s and s[-1].isalpha():
+        s += "."
+    return s
+
+
+def _vis_pad(s: str, width: int) -> str:
+    """Left-justify visible text to ``width`` (``s`` carries no ANSI here)."""
+    return s + " " * max(0, width - len(s))
+
+
 def _truncate(s: str, n: int) -> str:
+    """Clip with an ellipsis. Used only by the compact `redpen history` log, never
+    by the verdict table or the request audit (those wrap, never truncate)."""
     s = " ".join(s.split())
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
-def _term_width() -> int:
-    return min(max(shutil.get_terminal_size((100, 24)).columns, 60), 120)
+def _columns_table(p: Palette, rows: list[tuple[str, str, str]], term_w: int,
+                   *, marker_w: int, numbered: bool) -> list[str]:
+    """An aligned, wrapping, never-truncated table.
+
+    Each row is ``(marker, left, right)`` where ``marker`` is the pre-colored,
+    visible-width-``marker_w`` status. Left (the claim/item) and right (the
+    reason/note) wrap within their columns and stay aligned. On a narrow terminal
+    the right column drops to its own indented full-width line beneath the row,
+    so text is wrapped, never squeezed into nonsense or clipped.
+    """
+    out: list[str] = []
+    gutter = "  "
+    num_w = 3 if numbered else 0          # "{i:>2}."
+    num_gap = 1 if numbered else 0
+    prefix = len(gutter) + num_w + num_gap + marker_w + 2   # columns before `left`
+    avail = max(20, term_w - prefix - 2)                    # left + 2 + right
+    left_w = min(40, max(14, avail // 2))
+    right_w = avail - left_w
+    beneath = right_w < 28
+
+    def num_cell(i: int, k: int) -> str:
+        if not numbered:
+            return ""
+        return p.dim(f"{i:>2}." if k == 0 else "   ") + " "
+
+    for i, (marker, left, right) in enumerate(rows, start=1):
+        left_lines = textwrap.wrap(left, max(left_w, avail) if beneath else left_w) or [""]
+        if beneath:
+            for k, cl in enumerate(left_lines):
+                stat = marker if k == 0 else " " * marker_w
+                out.append(f"{gutter}{num_cell(i, k)}{stat}  {cl}".rstrip())
+            for rl in textwrap.wrap(right, max(24, term_w - prefix)):
+                out.append(" " * prefix + p.dim(rl))
+        else:
+            right_lines = textwrap.wrap(right, right_w) or [""]
+            for k in range(max(len(left_lines), len(right_lines))):
+                stat = marker if k == 0 else " " * marker_w
+                cl = _vis_pad(left_lines[k] if k < len(left_lines) else "", left_w)
+                rl = right_lines[k] if k < len(right_lines) else ""
+                out.append(f"{gutter}{num_cell(i, k)}{stat}  {cl}  {p.dim(rl) if rl else ''}".rstrip())
+    return out
 
 
 # --- header mascot, by capability -------------------------------------------
@@ -277,21 +361,9 @@ def render_report(
     out.append(_subhead(p, counts))
     out.append("")
 
-    subj_w = min(max((len(f.display) for f in findings), default=12), 40)
-    # Visible columns before the reason: "  NN. " + marker(8) + "  " + subject + "  ".
-    reason_indent = 2 + 4 + _MARKER_WIDTH + 2 + subj_w + 2
-    reason_w = max(24, _term_width() - reason_indent)
-
-    for i, f in enumerate(findings, start=1):
-        marker = _marker(p, f.result.verdict)
-        subject = _truncate(f.display, 40).ljust(subj_w)
-        lines = textwrap.wrap(" ".join(f.result.detail.split()), reason_w) or [""]
-        if len(lines) > 2:  # keep it compact; never cut mid-word
-            lines = lines[:2]
-            lines[1] = _truncate(lines[1] + " …", reason_w)
-        out.append(f"  {p.dim(f'{i:>2}.')} {marker}  {subject}  {p.dim(lines[0])}")
-        for cont in lines[1:]:
-            out.append(" " * reason_indent + p.dim(cont))
+    rows = [(_marker(p, f.result.verdict), _cap(f.display), _humanize_reason(f.result.detail))
+            for f in findings]
+    out.extend(_columns_table(p, rows, _term_width(), marker_w=_MARKER_WIDTH, numbered=True))
 
     out.append("")
     hint = p.dim("  run `redpen explain <n>` to see the evidence behind any line")
@@ -355,13 +427,15 @@ def render_audit(items: list[dict], *, color: bool | None = None) -> str:
         head = p.bold("Request audit — everything you asked for is accounted for.")
     out = [head, ""]
 
-    width = min(max((len(i.get("item", "")) for i in items), default=12), 40)
+    # marker = "<sym> <STATUS>" padded to a fixed visible width so columns stack.
+    status_w = max(len(i.get("status", "UNKNOWN")) for i in items)
+    marker_w = 1 + 1 + status_w  # sym + space + status word
+    rows = []
     for i in items:
         paint, sym = style.get(i.get("status", "UNKNOWN"), (p.yellow, "·"))
-        status = paint(f"{sym} {i.get('status', 'UNKNOWN'):<15}")
-        item = _truncate(i.get("item", ""), 40).ljust(width)
-        note = p.dim(_truncate(i.get("note", ""), 44))
-        out.append(f"  {status}  {item}  {note}")
+        marker = paint(f"{sym} {i.get('status', 'UNKNOWN'):<{status_w}}")
+        rows.append((marker, _cap(i.get("item", "")), _humanize_reason(i.get("note", ""))))
+    out.extend(_columns_table(p, rows, _term_width(), marker_w=marker_w, numbered=False))
 
     done = sum(1 for i in items if i.get("status") == "DONE")
     unsub = sum(1 for i in items if i.get("status") == "UNSUBSTANTIATED")
